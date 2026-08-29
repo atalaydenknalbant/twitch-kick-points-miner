@@ -173,18 +173,6 @@ Windows, Linux, and macOS release files can be built with:
 ./build.ps1
 ```
 
-Pushing a semantic version tag such as `v2.0.0` runs the release workflow, tests the project, builds supported targets, creates SHA256 files, and publishes the GitHub release.
-
-## Terminal Logos
-
-The Twitch and Kick marks are embedded into the executable. Sixel capable terminals can render the PNG assets. Other terminals use compact colored `T` and `K` marks. Saved logs and Discord messages use plain platform names.
-
-Set `TKPM_PLATFORM_LOGOS` to `sixel`, `unicode`, or `text` to force a mode.
-
-## Contributing
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Do not include credentials, cookies, logs, compiled binaries, or generated configuration.
-
 ## License
 
 The project is distributed under the [Creative Commons Attribution NonCommercial 4.0 International license](LICENSE). Attribution and change notices for the upstream fork must be retained. Commercial use is not granted by this license.
