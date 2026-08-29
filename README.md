@@ -34,11 +34,6 @@
 - Optional Discord events, saved logs, privacy anonymization, and per streamer overrides are included.
 - Release checks use SHA256 verification before an automatic update is installed.
 
-## Warning
-
-This project automates interactions with Twitch and Kick. Platform behavior and private website endpoints can change without notice. Use it at your own risk and review the applicable platform terms. This project is not affiliated with, sponsored by, or endorsed by Twitch or Kick.
-
-Never publish `config.json`, the `cookies` directory, saved logs, or account tokens. These paths are ignored by Git.
 
 ## Download
 
