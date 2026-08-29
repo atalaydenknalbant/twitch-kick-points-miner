@@ -4,9 +4,11 @@
 
 <h1 align="center">Twitch Kick Points Miner</h1>
 
-<p align="center">
- This project was made possible by a fork of <a href="https://github.com/0x8fv/Twitch-Channel-Points-Miner">0x8fv/Twitch Channel Points Miner</a>. 
-</p>
+<blockquote>
+  <p>
+    This project was made possible by a fork of <a href="https://github.com/0x8fv/Twitch-Channel-Points-Miner">0x8fv/Twitch Channel Points Miner</a>.
+  </p>
+</blockquote>
 
 <p align="center">
   A lightweight Go application that monitors followed Twitch and Kick channels, watches eligible live streams, tracks balances, and collects supported channel rewards from 1 terminal.
