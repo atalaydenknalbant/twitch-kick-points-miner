@@ -61,6 +61,17 @@ func TestConfigureTwitchFirstRunCanConnect(t *testing.T) {
 	}
 }
 
+func TestConfigureTwitchFirstRunAcceptsLowercaseC(t *testing.T) {
+	cfg := config{}
+	var output bytes.Buffer
+	if err := configureTwitchFirstRun(&cfg, strings.NewReader("c\n"), &output); err != nil {
+		t.Fatalf("connect Twitch with lowercase c: %v", err)
+	}
+	if !cfg.Twitch.Enabled {
+		t.Fatal("Twitch should be enabled")
+	}
+}
+
 func TestConfigureTwitchFirstRunCanSkip(t *testing.T) {
 	cfg := config{Twitch: twitchConfig{Enabled: true}}
 	var output bytes.Buffer

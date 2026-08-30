@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/utils"
 )
 
@@ -40,6 +39,8 @@ type persistedCookie struct {
 
 type cookieStore map[string]persistedCookie
 
+var errInvalidTwitchToken = errors.New("invalid Twitch access token")
+
 func NewTwitchLogin(clientID, deviceID, username, userAgent, password string) (*TwitchLogin, error) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second}
@@ -57,12 +58,17 @@ func (t *TwitchLogin) Client() *http.Client { return t.client }
 
 func (t *TwitchLogin) Login(cookiesPath string) error {
 	if err := t.loadCookies(cookiesPath); err == nil && t.Token != "" {
-		if ok := t.checkLogin(); ok {
-			return nil
+		if err := t.validateToken(); err == nil {
+			return t.saveCookies(cookiesPath)
+		} else if !errors.Is(err, errInvalidTwitchToken) {
+			return fmt.Errorf("validate stored Twitch token: %w", err)
 		}
 	}
 	if err := t.runDeviceFlow(); err != nil {
 		return err
+	}
+	if err := t.validateToken(); err != nil {
+		return fmt.Errorf("validate new Twitch token: %w", err)
 	}
 	if err := t.saveCookies(cookiesPath); err != nil {
 		return err
@@ -285,52 +291,66 @@ func (t *TwitchLogin) AuthToken() string {
 
 func (t *TwitchLogin) UserID() string {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.userID != "" {
-		return t.userID
-	}
+	userID := t.userID
 	t.mu.Unlock()
-	t.checkLogin()
+	if userID != "" {
+		return userID
+	}
+	if err := t.validateToken(); err != nil {
+		return ""
+	}
 	t.mu.Lock()
-	return t.userID
+	userID = t.userID
+	t.mu.Unlock()
+	return userID
 }
 
-func (t *TwitchLogin) checkLogin() bool {
-	payload := constants.ClonePersistedOperation(constants.GQLOperations.GetIDFromLogin)
-	if payload.Variables == nil {
-		payload.Variables = map[string]interface{}{}
+func (t *TwitchLogin) validateToken() error {
+	t.mu.Lock()
+	token := t.Token
+	t.mu.Unlock()
+	if token == "" {
+		return errInvalidTwitchToken
 	}
-	payload.Variables["login"] = t.Username
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, constants.GQLOperations.URL, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("OAuth %s", t.Token))
-	req.Header.Set("Client-Id", t.ClientID)
-	req.Header.Set("X-Device-Id", t.DeviceID)
+
+	req, err := http.NewRequest(http.MethodGet, "https://id.twitch.tv/oauth2/validate", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("OAuth %s", token))
 	req.Header.Set("User-Agent", t.UserAgent)
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return false
+		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errInvalidTwitchToken
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("Twitch token validation status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
 	var res struct {
-		Data struct {
-			User struct {
-				ID string `json:"id"`
-			} `json:"user"`
-		} `json:"data"`
+		Login  string `json:"login"`
+		UserID string `json:"user_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return false
+		return err
 	}
-	if res.Data.User.ID != "" {
-		t.mu.Lock()
-		t.userID = res.Data.User.ID
-		t.ensureSessionCookiesLocked()
-		t.mu.Unlock()
-		return true
+	if res.UserID == "" {
+		return errors.New("Twitch token validation returned no user id")
 	}
-	return false
+
+	t.mu.Lock()
+	t.userID = res.UserID
+	if res.Login != "" {
+		t.Username = res.Login
+	}
+	t.ensureSessionCookiesLocked()
+	t.mu.Unlock()
+	return nil
 }
 
 // ? Caller must hold t.mu.

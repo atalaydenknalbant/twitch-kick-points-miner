@@ -808,7 +808,7 @@ func configureTwitchFirstRun(cfg *config, input io.Reader, output io.Writer) err
 | Disables Twitch and continues with Kick only.                          |
 +------------------------------------------------------------------------+
 %s`, constants.ColorPurple, constants.ColorReset)
-	fmt.Fprint(output, "Choose Connect or Skip [C/s]: ")
+	fmt.Fprint(output, "Choose Connect or Skip [c/s, Enter = Connect]: ")
 
 	line, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
