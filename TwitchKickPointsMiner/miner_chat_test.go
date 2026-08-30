@@ -3,7 +3,7 @@ package twitchchannelpointsminer
 import (
 	"testing"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func TestShouldJoinChat(t *testing.T) {

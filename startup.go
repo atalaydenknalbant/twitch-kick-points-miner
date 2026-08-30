@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/constants"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 )
 
 const startupArt = `

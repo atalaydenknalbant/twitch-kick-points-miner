@@ -5,7 +5,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func TestHandlePubSubGainSupportsPredictionStakeDeduction(t *testing.T) {

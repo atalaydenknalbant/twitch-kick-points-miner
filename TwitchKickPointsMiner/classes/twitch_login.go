@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/constants"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/utils"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/utils"
 )
 
 type TwitchLogin struct {

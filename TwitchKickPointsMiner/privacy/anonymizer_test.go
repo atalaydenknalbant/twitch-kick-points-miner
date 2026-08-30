@@ -3,7 +3,7 @@ package privacy
 import (
 	"testing"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func TestAnonymizer_NameStable(t *testing.T) {

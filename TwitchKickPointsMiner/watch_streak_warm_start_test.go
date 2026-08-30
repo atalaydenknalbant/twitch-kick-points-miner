@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func testWarmStartStreamer(login, channelID, broadcastID string, createdAt time.Time, online bool) *entities.Streamer {

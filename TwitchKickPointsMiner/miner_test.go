@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	classpkg "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	classpkg "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func testWatchSelectionStreakStreamer(username, channelID, game string, onlineAt time.Time, minuteWatched float64) *entities.Streamer {

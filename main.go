@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	miner "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/constants"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/utils"
+	miner "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/utils"
 )
 
 const kickSetupVersion = 5

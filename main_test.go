@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	miner "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
+	miner "github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 )
 
 func TestDefaultConfigIncludesExpectedKeys(t *testing.T) {

@@ -16,9 +16,8 @@
 
 <p align="center">
   <a href="https://github.com/atalaydenknalbant/twitch-kick-points-miner/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/atalaydenknalbant/twitch-kick-points-miner?style=flat-square"></a>
-  <a href="https://github.com/atalaydenknalbant/twitch-kick-points-miner/actions"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/atalaydenknalbant/twitch-kick-points-miner/ci.yml?branch=main&style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey?style=flat-square"></a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
 </p>
 
 ## Features
@@ -159,7 +158,7 @@ Set `"auto_update": false` to disable this check. Development runs started with 
 
 ## Build From Source
 
-Go `1.26` or newer is required.
+Go `1.27` or newer is required.
 
 ```powershell
 go test ./...

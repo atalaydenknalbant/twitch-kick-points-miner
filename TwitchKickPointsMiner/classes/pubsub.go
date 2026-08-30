@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/classes/entities"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/constants"
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/privacy"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/privacy"
 
 	"github.com/gorilla/websocket"
 )

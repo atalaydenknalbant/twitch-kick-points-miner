@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchChannelPointsMiner/constants"
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 )
 
 const terminalLogoSize = 14
