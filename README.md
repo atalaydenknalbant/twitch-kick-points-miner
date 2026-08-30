@@ -29,6 +29,7 @@
 - Offline channels are polled without opening viewer connections and begin watching when they become live.
 - Twitch bonuses, watch streaks, Moments, Drops, raids, and predictions are supported.
 - Kick viewer WebSocket activity, points balance tracking, and watch rewards are supported.
+- Kick watch recovery reserves interrupted live sessions for up to `15` minutes and releases them after a confirmed point gain.
 - Terminal output uses Twitch and Kick platform marks, balance deltas, games, and session totals.
 - Optional Discord events, saved logs, privacy anonymization, and per streamer overrides are included.
 - Release checks use SHA256 verification before an automatic update is installed.

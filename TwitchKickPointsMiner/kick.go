@@ -30,6 +30,7 @@ const (
 	kickWSConnect     = "wss://websockets.kick.com/viewer/v1/connect"
 	kickClientToken   = "e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823"
 	kickPollWorkers   = 4
+	kickWatchRecovery = 15 * time.Minute
 )
 
 type KickSettings struct {
@@ -227,11 +228,12 @@ type kickAccountRuntime struct {
 	logger   *Logger
 	client   *kickClient
 
-	mu        sync.Mutex
-	streamers map[string]*kickStreamerState
-	order     []string
-	followed  bool
-	loaded    bool
+	mu                sync.Mutex
+	streamers         map[string]*kickStreamerState
+	order             []string
+	followed          bool
+	loaded            bool
+	rebalanceRequests chan struct{}
 }
 
 type kickStreamerState struct {
@@ -250,6 +252,8 @@ type kickStreamerState struct {
 	InitialPointsSet bool
 	History          map[string]kickPointsHistoryEntry
 	CancelFunc       context.CancelFunc
+	RecoveryStreamID int64
+	RecoveryUntil    time.Time
 }
 
 type kickPointsHistoryEntry struct {
@@ -285,13 +289,14 @@ func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, log
 		}
 	}
 	return &kickAccountRuntime{
-		account:   account,
-		settings:  settings,
-		logger:    logger,
-		client:    newKickClient(account.Token),
-		streamers: streamers,
-		order:     append([]string(nil), account.Streamers...),
-		followed:  followed,
+		account:           account,
+		settings:          settings,
+		logger:            logger,
+		client:            newKickClient(account.Token),
+		streamers:         streamers,
+		order:             append([]string(nil), account.Streamers...),
+		followed:          followed,
+		rebalanceRequests: make(chan struct{}, 1),
 	}
 }
 
@@ -323,6 +328,8 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			r.refresh(ctx)
+			r.rebalance(ctx)
+		case <-r.rebalanceRequests:
 			r.rebalance(ctx)
 		}
 	}
@@ -507,6 +514,10 @@ func (r *kickAccountRuntime) updateStreamerInfo(name string, info kickChannelInf
 		st.UserID = info.UserID
 	}
 	st.StreamID = info.StreamID
+	if st.RecoveryStreamID != 0 && info.StreamID != 0 && st.RecoveryStreamID != info.StreamID {
+		st.RecoveryStreamID = 0
+		st.RecoveryUntil = time.Time{}
+	}
 	if st.StatusLogged && (!wasStatusKnown || st.Online != wasOnline) {
 		statusSnapshot = snapshotKickStreamerLocked(st)
 		shouldLogStatus = true
@@ -519,18 +530,8 @@ func (r *kickAccountRuntime) updateStreamerInfo(name string, info kickChannelInf
 }
 
 func (r *kickAccountRuntime) rebalance(ctx context.Context) {
-	desired := make(map[string]struct{})
 	r.mu.Lock()
-	for _, name := range r.order {
-		st := r.streamers[name]
-		if st == nil || !st.Online {
-			continue
-		}
-		desired[name] = struct{}{}
-		if len(desired) >= r.account.MaxConcurrent {
-			break
-		}
-	}
+	desired := r.desiredStreamersLocked(time.Now())
 
 	toStop := make([]string, 0)
 	toStart := make([]string, 0)
@@ -561,6 +562,45 @@ func (r *kickAccountRuntime) rebalance(ctx context.Context) {
 	}
 }
 
+func (r *kickAccountRuntime) desiredStreamersLocked(now time.Time) map[string]struct{} {
+	desired := make(map[string]struct{}, r.account.MaxConcurrent)
+	for _, name := range r.order {
+		st := r.streamers[name]
+		if !kickWatchRecoveryActive(st, now) {
+			continue
+		}
+		desired[name] = struct{}{}
+		if len(desired) >= r.account.MaxConcurrent {
+			return desired
+		}
+	}
+	for _, name := range r.order {
+		st := r.streamers[name]
+		if st == nil || !st.Online {
+			continue
+		}
+		desired[name] = struct{}{}
+		if len(desired) >= r.account.MaxConcurrent {
+			return desired
+		}
+	}
+	return desired
+}
+
+func kickWatchRecoveryActive(st *kickStreamerState, now time.Time) bool {
+	if st == nil || !st.Online || st.StreamID == 0 || st.RecoveryStreamID != st.StreamID {
+		return false
+	}
+	return st.RecoveryUntil.After(now)
+}
+
+func (r *kickAccountRuntime) requestRebalance() {
+	select {
+	case r.rebalanceRequests <- struct{}{}:
+	default:
+	}
+}
+
 func (r *kickAccountRuntime) startStreamer(parent context.Context, name string) {
 	r.mu.Lock()
 	st := r.streamers[name]
@@ -574,6 +614,11 @@ func (r *kickAccountRuntime) startStreamer(parent context.Context, name string) 
 	channelID := st.ChannelID
 	userID := st.UserID
 	streamID := st.StreamID
+	now := time.Now()
+	if st.RecoveryStreamID != streamID || !st.RecoveryUntil.After(now) {
+		st.RecoveryStreamID = streamID
+		st.RecoveryUntil = now.Add(kickWatchRecovery)
+	}
 	r.mu.Unlock()
 
 	r.logger.Printf("%s [%s] started watching %s", constants.PlatformKickToken, r.account.displayName(), name)
@@ -590,6 +635,8 @@ func (r *kickAccountRuntime) stopStreamer(name string) {
 	cancel := st.CancelFunc
 	st.CancelFunc = nil
 	st.Watching = false
+	st.RecoveryStreamID = 0
+	st.RecoveryUntil = time.Time{}
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -611,6 +658,7 @@ func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, cha
 			st.CancelFunc = nil
 		}
 		r.mu.Unlock()
+		r.requestRebalance()
 	}()
 
 	for ctx.Err() == nil {
@@ -738,6 +786,7 @@ func (r *kickAccountRuntime) updateKickPoints(name string, points int, reason st
 	var snapshot kickStreamerSnapshot
 	var delta int
 	shouldLog := false
+	recoveryCompleted := false
 
 	r.mu.Lock()
 	st := r.streamers[name]
@@ -756,6 +805,11 @@ func (r *kickAccountRuntime) updateKickPoints(name string, points int, reason st
 	if hadOld {
 		delta = points - old
 		if delta != 0 {
+			if delta > 0 && !st.RecoveryUntil.IsZero() {
+				st.RecoveryStreamID = 0
+				st.RecoveryUntil = time.Time{}
+				recoveryCompleted = true
+			}
 			if reason == "" {
 				if delta > 0 {
 					reason = "WATCH"
@@ -769,6 +823,9 @@ func (r *kickAccountRuntime) updateKickPoints(name string, points int, reason st
 		}
 	}
 	r.mu.Unlock()
+	if recoveryCompleted {
+		r.requestRebalance()
+	}
 
 	if shouldLog {
 		r.logPointsDelta(snapshot, delta, reason)

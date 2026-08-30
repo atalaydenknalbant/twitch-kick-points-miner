@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type kickRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -298,6 +299,58 @@ func TestKickRuntimeTracksInitialPointsAndHistory(t *testing.T) {
 	}
 	if got := streamer.History["BALANCE_CHANGE"]; got.Count != 1 || got.Amount != -5 {
 		t.Fatalf("balance history got %#v", got)
+	}
+}
+
+func TestKickWatchRecoveryKeepsInterruptedStreamSelected(t *testing.T) {
+	runtime := newKickAccountRuntime(KickAccountConfig{
+		Alias:         "Test",
+		Token:         "token",
+		Streamers:     []string{"High", "Interrupted"},
+		MaxConcurrent: 1,
+	}, KickSettings{}, NewLogger(LoggerSettings{}, ""))
+	now := time.Now()
+	runtime.streamers["high"].Online = true
+	runtime.streamers["high"].StreamID = 1
+	interrupted := runtime.streamers["interrupted"]
+	interrupted.Online = true
+	interrupted.StreamID = 2
+	interrupted.RecoveryStreamID = 2
+	interrupted.RecoveryUntil = now.Add(time.Minute)
+
+	desired := runtime.desiredStreamersLocked(now)
+	if _, ok := desired["interrupted"]; !ok {
+		t.Fatalf("interrupted stream was not selected: %#v", desired)
+	}
+	if _, ok := desired["high"]; ok {
+		t.Fatalf("normal priority replaced active recovery: %#v", desired)
+	}
+
+	desired = runtime.desiredStreamersLocked(now.Add(2 * time.Minute))
+	if _, ok := desired["high"]; !ok {
+		t.Fatalf("normal priority did not resume after recovery expired: %#v", desired)
+	}
+}
+
+func TestKickPointGainCompletesWatchRecovery(t *testing.T) {
+	runtime := newKickAccountRuntime(KickAccountConfig{
+		Alias:         "Test",
+		Token:         "token",
+		Streamers:     []string{"Streamer"},
+		MaxConcurrent: 1,
+	}, KickSettings{}, NewLogger(LoggerSettings{}, ""))
+	streamer := runtime.streamers["streamer"]
+	streamer.StreamID = 7
+	streamer.Points = 100
+	streamer.HasPoints = true
+	streamer.InitialPoints = 100
+	streamer.InitialPointsSet = true
+	streamer.RecoveryStreamID = 7
+	streamer.RecoveryUntil = time.Now().Add(kickWatchRecovery)
+
+	runtime.updateKickPoints("streamer", 110, "")
+	if streamer.RecoveryStreamID != 0 || !streamer.RecoveryUntil.IsZero() {
+		t.Fatalf("point gain did not complete recovery: %#v", streamer)
 	}
 }
 
