@@ -28,7 +28,7 @@
 - Follow lists refresh while the miner is running, so new follows can be discovered without restarting.
 - Offline channels are polled without opening viewer connections and begin watching when they become live.
 - Twitch bonuses, watch streaks, Moments, Drops, raids, and predictions are supported.
-- Kick viewer WebSocket activity, points balance tracking, and watch rewards are supported.
+- Kick viewer WebSocket activity, points balance tracking, watch rewards, and daily reward claiming are supported.
 - Kick watch recovery reserves interrupted live sessions for up to `15` minutes and releases them after a confirmed point gain.
 - Terminal output uses Twitch and Kick platform marks, balance deltas, games, and session totals.
 - Optional Discord events, saved logs, privacy anonymization, and per streamer overrides are included.
@@ -89,6 +89,7 @@ The program creates missing settings automatically. Important top level options 
   "setup_completed": true,
   "setup_version": 5,
   "check_interval": 120,
+  "claim_daily_rewards": true,
   "points_interval": 150,
   "handshake_interval": 30,
   "watch_event_interval": 10,
@@ -107,6 +108,8 @@ The program creates missing settings automatically. Important top level options 
 ```
 
 Leave a Kick account `streamers` array empty to load every channel followed by that account. A nonempty array keeps manual priority order. Followed channels are refreshed every `check_interval`. Only live channels receive viewer connections.
+
+Kick daily rewards are checked once at startup and every `check_interval`. When Kick reports that the account level daily challenge is `claimable`, the miner claims it once and logs the result. Set `claim_daily_rewards` to `false` to disable this behavior. Existing configurations default to enabled when this key is absent.
 
 Kick setup never opens or controls a browser. Open `https://kick.com/following` in your normal signed in browser, press `F12`, select `Network`, reload the page, and filter for `followed`. Open the `/api/v2/channels/followed` request, expand `Request Headers`, and copy the complete `Authorization: Bearer ...` value into the terminal. You can also paste only the value after `Bearer`.
 

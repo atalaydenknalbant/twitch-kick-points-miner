@@ -1,6 +1,7 @@
 package twitchchannelpointsminer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ const (
 	kickFollowedAPI   = "https://kick.com/api/v2/channels/followed"
 	kickLivestreamAPI = "https://kick.com/api/v2/channels/%s/livestream"
 	kickPointsAPI     = "https://kick.com/api/v2/channels/%s/points"
+	kickChallengesAPI = "https://web.kick.com/api/v1/gamification/challenges"
+	kickClaimAPI      = "https://web.kick.com/api/v1/gamification/challenges/%s/claim"
 	kickWSTokenAPI    = "https://websockets.kick.com/viewer/v1/token"
 	kickWSConnect     = "wss://websockets.kick.com/viewer/v1/connect"
 	kickClientToken   = "e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823"
@@ -42,9 +45,14 @@ type KickSettings struct {
 	PointsIntervalSeconds       int                 `json:"points_interval"`
 	HandshakeIntervalSeconds    int                 `json:"handshake_interval"`
 	WatchEventIntervalSeconds   int                 `json:"watch_event_interval"`
+	ClaimDailyRewards           *bool               `json:"claim_daily_rewards,omitempty"`
 	ReconnectCooldownSeconds    int                 `json:"reconnect_cooldown"`
 	ConnectionStaggerMinSeconds int                 `json:"connection_stagger_min"`
 	ConnectionStaggerMaxSeconds int                 `json:"connection_stagger_max"`
+}
+
+func (s KickSettings) claimDailyRewardsEnabled() bool {
+	return s.ClaimDailyRewards == nil || *s.ClaimDailyRewards
 }
 
 type KickAccountConfig struct {
@@ -77,6 +85,10 @@ func (a *KickAccountConfig) UnmarshalJSON(data []byte) error {
 func (s *KickSettings) Default() {
 	if s.CheckIntervalSeconds <= 0 {
 		s.CheckIntervalSeconds = 120
+	}
+	if s.ClaimDailyRewards == nil {
+		enabled := true
+		s.ClaimDailyRewards = &enabled
 	}
 	if s.PointsIntervalSeconds <= 0 {
 		s.PointsIntervalSeconds = 150
@@ -234,6 +246,7 @@ type kickAccountRuntime struct {
 	followed          bool
 	loaded            bool
 	rebalanceRequests chan struct{}
+	claimedRewards    map[string]struct{}
 }
 
 type kickStreamerState struct {
@@ -297,6 +310,7 @@ func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, log
 		order:             append([]string(nil), account.Streamers...),
 		followed:          followed,
 		rebalanceRequests: make(chan struct{}, 1),
+		claimedRewards:    make(map[string]struct{}),
 	}
 }
 
@@ -315,6 +329,7 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 	}
 	loadStartedAt := time.Now()
 	r.refresh(ctx)
+	r.checkDailyRewards(ctx)
 	r.logLoaded(time.Since(loadStartedAt))
 	r.setLoaded()
 	r.rebalance(ctx)
@@ -328,10 +343,42 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			r.refresh(ctx)
+			r.checkDailyRewards(ctx)
 			r.rebalance(ctx)
 		case <-r.rebalanceRequests:
 			r.rebalance(ctx)
 		}
+	}
+}
+
+func (r *kickAccountRuntime) checkDailyRewards(ctx context.Context) {
+	if !r.settings.claimDailyRewardsEnabled() {
+		return
+	}
+	rewards, err := r.client.dailyRewards(ctx)
+	if err != nil {
+		r.logger.Debugf("%s [%s] daily reward check failed: %v", constants.PlatformKickToken, r.account.displayName(), err)
+		return
+	}
+	for _, reward := range rewards {
+		if !strings.EqualFold(reward.Status, "claimable") || reward.ID == "" {
+			continue
+		}
+		key := reward.ID + "|" + reward.WindowEndsAt
+		r.mu.Lock()
+		_, claimed := r.claimedRewards[key]
+		r.mu.Unlock()
+		if claimed {
+			continue
+		}
+		if err := r.client.claimDailyReward(ctx, reward.ID); err != nil {
+			r.logger.Errorf("%s [%s] daily reward claim failed: %v", constants.PlatformKickToken, r.account.displayName(), err)
+			continue
+		}
+		r.mu.Lock()
+		r.claimedRewards[key] = struct{}{}
+		r.mu.Unlock()
+		r.logger.EmojiPrintf(":gift:", "%s [%s] Daily reward claimed!", constants.PlatformKickToken, r.account.displayName())
 	}
 }
 
@@ -1017,6 +1064,12 @@ type kickChannelInfo struct {
 	Online    bool
 }
 
+type kickDailyReward struct {
+	ID           string
+	Status       string
+	WindowEndsAt string
+}
+
 func newKickClient(token string) *kickClient {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{
@@ -1228,9 +1281,67 @@ func (c *kickClient) pointsFromChannel(ctx context.Context, username string) (in
 	return 0, false, nil
 }
 
+func (c *kickClient) dailyRewards(ctx context.Context) ([]kickDailyReward, error) {
+	headers := map[string]string{"X-App-Platform": "web"}
+	body, status, err := c.getJSON(ctx, kickChallengesAPI, kickBaseURL+"/", headers)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusForbidden {
+		c.resetSession()
+		body, status, err = c.getJSON(ctx, kickChallengesAPI, kickBaseURL+"/", headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if status != http.StatusOK {
+		return nil, kickStatusError("daily rewards", status, body)
+	}
+	return parseKickDailyRewards(body)
+}
+
+func (c *kickClient) claimDailyReward(ctx context.Context, challengeID string) error {
+	challengeID = strings.TrimSpace(challengeID)
+	if challengeID == "" {
+		return errors.New("daily reward challenge id missing")
+	}
+	headers := map[string]string{
+		"Content-Type":   "application/json",
+		"X-App-Platform": "web",
+	}
+	rawURL := fmt.Sprintf(kickClaimAPI, url.PathEscape(challengeID))
+	body, status, err := c.postJSON(ctx, rawURL, kickBaseURL+"/", headers, []byte("{}"))
+	if err != nil {
+		return err
+	}
+	if status == http.StatusForbidden {
+		c.resetSession()
+		body, status, err = c.postJSON(ctx, rawURL, kickBaseURL+"/", headers, []byte("{}"))
+		if err != nil {
+			return err
+		}
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return kickStatusError("daily reward claim", status, body)
+	}
+	return nil
+}
+
 func (c *kickClient) getJSON(ctx context.Context, rawURL, referer string, extraHeaders map[string]string) (map[string]interface{}, int, error) {
+	return c.requestJSON(ctx, http.MethodGet, rawURL, referer, extraHeaders, nil)
+}
+
+func (c *kickClient) postJSON(ctx context.Context, rawURL, referer string, extraHeaders map[string]string, body []byte) (map[string]interface{}, int, error) {
+	return c.requestJSON(ctx, http.MethodPost, rawURL, referer, extraHeaders, body)
+}
+
+func (c *kickClient) requestJSON(ctx context.Context, method, rawURL, referer string, extraHeaders map[string]string, requestBody []byte) (map[string]interface{}, int, error) {
 	c.ensureSession(ctx)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	var reader io.Reader
+	if requestBody != nil {
+		reader = bytes.NewReader(requestBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1356,6 +1467,42 @@ func parseKickPoints(payload map[string]interface{}) (int, bool) {
 		return points, true
 	}
 	return 0, false
+}
+
+func parseKickDailyRewards(payload map[string]interface{}) ([]kickDailyReward, error) {
+	rawRewards, ok := payload["data"].([]interface{})
+	if !ok {
+		return nil, errors.New("daily rewards response missing data")
+	}
+	rewards := make([]kickDailyReward, 0, len(rawRewards))
+	for _, rawReward := range rawRewards {
+		rewardData, ok := rawReward.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		reward := kickDailyReward{
+			ID:     kickValueString(rewardData["id"]),
+			Status: kickValueString(rewardData["status"]),
+		}
+		if window, ok := rewardData["window"].(map[string]interface{}); ok {
+			reward.WindowEndsAt = kickValueString(window["ends_at"])
+		}
+		rewards = append(rewards, reward)
+	}
+	return rewards, nil
+}
+
+func kickValueString(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return v.String()
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	default:
+		return ""
+	}
 }
 
 func parseKickFollowedChannelsPage(payload map[string]interface{}) ([]string, string, error) {

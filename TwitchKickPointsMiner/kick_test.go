@@ -117,6 +117,96 @@ func TestParseKickFollowedChannelsPageRejectsMissingChannels(t *testing.T) {
 	}
 }
 
+func TestParseKickDailyRewards(t *testing.T) {
+	rewards, err := parseKickDailyRewards(map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{
+				"id":     "challenge-1",
+				"status": "claimable",
+				"window": map[string]interface{}{"ends_at": "2026-09-09T00:00:00Z"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse daily rewards: %v", err)
+	}
+	if len(rewards) != 1 || rewards[0].ID != "challenge-1" || rewards[0].Status != "claimable" || rewards[0].WindowEndsAt != "2026-09-09T00:00:00Z" {
+		t.Fatalf("unexpected daily rewards: %#v", rewards)
+	}
+}
+
+func TestKickRuntimeClaimsDailyRewardOncePerWindow(t *testing.T) {
+	var output bytes.Buffer
+	logger := NewLogger(LoggerSettings{Emoji: true}, "")
+	logger.base.SetOutput(&output)
+	runtime := newKickAccountRuntime(KickAccountConfig{
+		Alias: "Test",
+		Token: "test-token",
+	}, KickSettings{}, logger)
+	runtime.client.initialized = true
+	getCalls := 0
+	postCalls := 0
+	runtime.client.httpClient.Transport = kickRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/v1/gamification/challenges" {
+			getCalls++
+			if req.Method != http.MethodGet {
+				t.Fatalf("challenge method got %s", req.Method)
+			}
+			if got := req.Header.Get("X-App-Platform"); got != "web" {
+				t.Fatalf("platform header got %q", got)
+			}
+			return kickTestResponse(req, http.StatusOK, `{"data":[{"id":"daily-1","status":"claimable","window":{"ends_at":"2026-09-09T00:00:00Z"}}]}`), nil
+		}
+		if req.URL.Path == "/api/v1/gamification/challenges/daily-1/claim" {
+			postCalls++
+			if req.Method != http.MethodPost {
+				t.Fatalf("claim method got %s", req.Method)
+			}
+			body, err := io.ReadAll(req.Body)
+			if err != nil || string(body) != "{}" {
+				t.Fatalf("claim body got %q, err=%v", body, err)
+			}
+			return kickTestResponse(req, http.StatusOK, `{"data":{"claimed":true}}`), nil
+		}
+		t.Fatalf("unexpected Kick request path %q", req.URL.Path)
+		return nil, nil
+	})
+
+	runtime.checkDailyRewards(context.Background())
+	runtime.checkDailyRewards(context.Background())
+
+	if getCalls != 2 || postCalls != 1 {
+		t.Fatalf("daily reward calls got GET=%d POST=%d", getCalls, postCalls)
+	}
+	if !strings.Contains(output.String(), "Daily reward claimed!") {
+		t.Fatalf("claim log missing:\n%s", output.String())
+	}
+}
+
+func TestKickRuntimeCanDisableDailyRewards(t *testing.T) {
+	disabled := false
+	runtime := newKickAccountRuntime(KickAccountConfig{
+		Alias: "Test",
+		Token: "test-token",
+	}, KickSettings{ClaimDailyRewards: &disabled}, NewLogger(LoggerSettings{}, ""))
+	runtime.client.initialized = true
+	runtime.client.httpClient.Transport = kickRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("daily rewards disabled but requested %s", req.URL)
+		return nil, nil
+	})
+
+	runtime.checkDailyRewards(context.Background())
+}
+
+func kickTestResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
 func TestKickClientLoadsEveryFollowedChannelPage(t *testing.T) {
 	client := newKickClient("test-token")
 	client.initialized = true
@@ -255,6 +345,9 @@ func TestKickSettingsDefaultNormalizesAccounts(t *testing.T) {
 	settings.Default()
 	if settings.CheckIntervalSeconds != 120 {
 		t.Fatalf("check interval got %d", settings.CheckIntervalSeconds)
+	}
+	if settings.ClaimDailyRewards == nil || !*settings.ClaimDailyRewards {
+		t.Fatal("daily reward claiming should default to enabled")
 	}
 	if settings.Accounts[0].Alias == "" {
 		t.Fatalf("expected alias default")
