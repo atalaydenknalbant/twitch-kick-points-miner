@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="assets/miner.png" alt="Twitch Kick Points Miner mascot mining Twitch and Kick points" width="960">
+  <img src="assets/miner2.png" alt="Twitch Kick Points Miner mascot mining Twitch and Kick points" width="960">
 </p>
 
 <h1 align="center">Twitch Kick Points Miner</h1>
