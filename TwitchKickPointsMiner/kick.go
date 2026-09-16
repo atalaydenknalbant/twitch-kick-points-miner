@@ -18,22 +18,25 @@ import (
 
 	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const (
-	kickBaseURL       = "https://kick.com"
-	kickChannelAPI    = "https://kick.com/api/v2/channels/%s"
-	kickFollowedAPI   = "https://kick.com/api/v2/channels/followed"
-	kickLivestreamAPI = "https://kick.com/api/v2/channels/%s/livestream"
-	kickPointsAPI     = "https://kick.com/api/v2/channels/%s/points"
-	kickChallengesAPI = "https://web.kick.com/api/v1/gamification/challenges"
-	kickClaimAPI      = "https://web.kick.com/api/v1/gamification/challenges/%s/claim"
-	kickWSTokenAPI    = "https://websockets.kick.com/viewer/v1/token"
-	kickWSConnect     = "wss://websockets.kick.com/viewer/v1/connect"
-	kickClientToken   = "e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823"
-	kickPollWorkers   = 4
-	kickWatchRecovery = 15 * time.Minute
+	kickBaseURL        = "https://kick.com"
+	kickChannelAPI     = "https://kick.com/api/v2/channels/%s"
+	kickFollowedAPI    = "https://kick.com/api/v2/channels/followed"
+	kickLivestreamAPI  = "https://kick.com/api/v2/channels/%s/livestream"
+	kickPointsAPI      = "https://kick.com/api/v2/channels/%s/points"
+	kickChallengesAPI  = "https://web.kick.com/api/v1/gamification/challenges"
+	kickClaimAPI       = "https://web.kick.com/api/v1/gamification/challenges/%s/claim"
+	kickWSTokenAPI     = "https://websockets.kick.com/viewer/v1/token"
+	kickWSConnect      = "wss://websockets.kick.com/viewer/v1/connect"
+	kickClientToken    = "e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823"
+	kickPollWorkers    = 4
+	kickWatchRecovery  = 15 * time.Minute
+	kickWSReadLimit    = 1 << 20
+	kickWSWriteTimeout = 10 * time.Second
 )
 
 type KickSettings struct {
@@ -759,24 +762,24 @@ func (r *kickAccountRuntime) connectAndWatch(ctx context.Context, name string, i
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer conn.CloseNow()
 
-	if err := kickSendHandshake(conn, info.ChannelID); err != nil {
+	if err := kickSendHandshake(ctx, conn, info.ChannelID); err != nil {
 		return err
 	}
-	if err := kickSendPing(conn); err != nil {
+	if err := kickSendPing(ctx, conn); err != nil {
 		return err
 	}
 
 	readErr := make(chan error, 1)
 	go func() {
 		for {
-			_, message, err := conn.ReadMessage()
+			_, message, err := conn.Read(ctx)
 			if err != nil {
 				readErr <- err
 				return
 			}
-			if err := kickHandleIncoming(conn, message); err != nil {
+			if err := kickHandleIncoming(ctx, conn, message); err != nil {
 				readErr <- err
 				return
 			}
@@ -795,19 +798,19 @@ func (r *kickAccountRuntime) connectAndWatch(ctx context.Context, name string, i
 	for {
 		select {
 		case <-ctx.Done():
-			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			_ = conn.Close(websocket.StatusNormalClosure, "")
 			return nil
 		case err := <-readErr:
 			return err
 		case <-handshakeTicker.C:
-			if err := kickSendHandshake(conn, info.ChannelID); err != nil {
+			if err := kickSendHandshake(ctx, conn, info.ChannelID); err != nil {
 				return err
 			}
-			if err := kickSendPing(conn); err != nil {
+			if err := kickSendPing(ctx, conn); err != nil {
 				return err
 			}
 		case <-watchTicker.C:
-			if err := kickSendWatchEvent(conn, info.ChannelID, info.StreamID); err != nil {
+			if err := kickSendWatchEvent(ctx, conn, info.ChannelID, info.StreamID); err != nil {
 				return err
 			}
 		case <-pointsTicker.C:
@@ -1421,8 +1424,10 @@ func (c *kickClient) openViewerSocket(ctx context.Context, token string) (*webso
 	headers := http.Header{}
 	headers.Set("User-Agent", c.userAgent)
 	headers.Set("Origin", kickBaseURL)
-	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.DialContext(ctx, rawURL, headers)
+	conn, _, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPHeader: headers})
+	if err == nil {
+		conn.SetReadLimit(kickWSReadLimit)
+	}
 	return conn, err
 }
 
@@ -1639,8 +1644,14 @@ func toInt64(value interface{}) (int64, bool) {
 	}
 }
 
-func kickSendHandshake(conn *websocket.Conn, channelID int64) error {
-	return conn.WriteJSON(map[string]interface{}{
+func kickWriteJSON(ctx context.Context, conn *websocket.Conn, value interface{}) error {
+	writeCtx, cancel := context.WithTimeout(ctx, kickWSWriteTimeout)
+	defer cancel()
+	return wsjson.Write(writeCtx, conn, value)
+}
+
+func kickSendHandshake(ctx context.Context, conn *websocket.Conn, channelID int64) error {
+	return kickWriteJSON(ctx, conn, map[string]interface{}{
 		"type": "channel_handshake",
 		"data": map[string]interface{}{
 			"message": map[string]interface{}{
@@ -1650,16 +1661,16 @@ func kickSendHandshake(conn *websocket.Conn, channelID int64) error {
 	})
 }
 
-func kickSendPing(conn *websocket.Conn) error {
-	return conn.WriteJSON(map[string]string{"type": "ping"})
+func kickSendPing(ctx context.Context, conn *websocket.Conn) error {
+	return kickWriteJSON(ctx, conn, map[string]string{"type": "ping"})
 }
 
-func kickSendPong(conn *websocket.Conn) error {
-	return conn.WriteJSON(map[string]string{"type": "pong"})
+func kickSendPong(ctx context.Context, conn *websocket.Conn) error {
+	return kickWriteJSON(ctx, conn, map[string]string{"type": "pong"})
 }
 
-func kickSendWatchEvent(conn *websocket.Conn, channelID, streamID int64) error {
-	return conn.WriteJSON(map[string]interface{}{
+func kickSendWatchEvent(ctx context.Context, conn *websocket.Conn, channelID, streamID int64) error {
+	return kickWriteJSON(ctx, conn, map[string]interface{}{
 		"type": "user_event",
 		"data": map[string]interface{}{
 			"message": map[string]interface{}{
@@ -1671,13 +1682,13 @@ func kickSendWatchEvent(conn *websocket.Conn, channelID, streamID int64) error {
 	})
 }
 
-func kickHandleIncoming(conn *websocket.Conn, message []byte) error {
+func kickHandleIncoming(ctx context.Context, conn *websocket.Conn, message []byte) error {
 	text := strings.TrimSpace(string(message))
 	if text == "" {
 		return nil
 	}
 	if text == "ping" {
-		return kickSendPong(conn)
+		return kickSendPong(ctx, conn)
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(message, &payload); err != nil {
@@ -1685,7 +1696,7 @@ func kickHandleIncoming(conn *websocket.Conn, message []byte) error {
 	}
 	msgType, _ := payload["type"].(string)
 	if msgType == "ping" {
-		return kickSendPong(conn)
+		return kickSendPong(ctx, conn)
 	}
 	if msgType == "error" {
 		return fmt.Errorf("kick websocket error: %v", payload["data"])

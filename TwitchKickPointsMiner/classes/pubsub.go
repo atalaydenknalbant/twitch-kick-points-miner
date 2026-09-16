@@ -1,21 +1,31 @@
 package classes
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/classes/entities"
 	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/privacy"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+)
+
+const (
+	pubSubReadLimit    = 2 << 20
+	pubSubDialTimeout  = 30 * time.Second
+	pubSubWriteTimeout = 10 * time.Second
 )
 
 type Logger interface {
@@ -151,16 +161,23 @@ func (p *PubSubClient) run(connIndex int, topics []string, stop <-chan struct{})
 }
 
 func (p *PubSubClient) connectAndListen(connIndex int, topics []string, stop <-chan struct{}) error {
-	dialer := *websocket.DefaultDialer
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if p.disableSSL {
-		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
-	conn, _, err := dialer.Dial(constants.WebsocketURL, nil)
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), pubSubDialTimeout)
+	conn, _, err := websocket.Dial(dialCtx, constants.WebsocketURL, &websocket.DialOptions{
+		HTTPClient: &http.Client{Transport: transport},
+	})
+	cancelDial()
 	if err != nil {
 		return err
 	}
+	conn.SetReadLimit(pubSubReadLimit)
+	connCtx, cancelConn := context.WithCancel(context.Background())
 
-	lastPong := time.Now()
+	var lastPong atomic.Int64
+	lastPong.Store(time.Now().UnixNano())
 	pingTimer := time.NewTimer(p.randomPingInterval())
 	defer pingTimer.Stop()
 
@@ -191,13 +208,14 @@ func (p *PubSubClient) connectAndListen(connIndex int, topics []string, stop <-c
 	readWG.Add(1)
 
 	defer func() {
-		conn.Close()
+		cancelConn()
+		conn.CloseNow()
 		readWG.Wait()
 		close(msgCh)
 		workerWG.Wait()
 	}()
 
-	if err := p.listenTopics(conn, topics); err != nil {
+	if err := p.listenTopics(connCtx, conn, topics); err != nil {
 		return err
 	}
 
@@ -207,7 +225,7 @@ func (p *PubSubClient) connectAndListen(connIndex int, topics []string, stop <-c
 	go func() {
 		defer readWG.Done()
 		for {
-			_, message, err := conn.ReadMessage()
+			_, message, err := conn.Read(connCtx)
 			if err != nil {
 				select {
 				case readErr <- err:
@@ -229,7 +247,7 @@ func (p *PubSubClient) connectAndListen(connIndex int, topics []string, stop <-c
 			}
 			p.deepDebugf("PubSub[%d] recv: %s", connIndex, strings.TrimSpace(string(message)))
 			if msgType == "PONG" {
-				lastPong = time.Now()
+				lastPong.Store(time.Now().UnixNano())
 				continue
 			}
 			if msgType == "RECONNECT" {
@@ -272,12 +290,13 @@ func (p *PubSubClient) connectAndListen(connIndex int, topics []string, stop <-c
 	for {
 		select {
 		case <-stop:
+			_ = conn.Close(websocket.StatusNormalClosure, "")
 			return nil
 		case <-pingTimer.C:
-			if err := conn.WriteJSON(map[string]string{"type": "PING"}); err != nil {
+			if err := writePubSubJSON(connCtx, conn, map[string]string{"type": "PING"}); err != nil {
 				return err
 			}
-			if time.Since(lastPong) > 5*time.Minute {
+			if time.Since(time.Unix(0, lastPong.Load())) > 5*time.Minute {
 				return fmt.Errorf("last PONG >5m ago, reconnecting")
 			}
 			pingTimer.Reset(p.randomPingInterval())
@@ -341,7 +360,13 @@ func (p *PubSubClient) buildTopics() ([]string, error) {
 	return topics, nil
 }
 
-func (p *PubSubClient) listenTopics(conn *websocket.Conn, topics []string) error {
+func writePubSubJSON(ctx context.Context, conn *websocket.Conn, value interface{}) error {
+	writeCtx, cancel := context.WithTimeout(ctx, pubSubWriteTimeout)
+	defer cancel()
+	return wsjson.Write(writeCtx, conn, value)
+}
+
+func (p *PubSubClient) listenTopics(ctx context.Context, conn *websocket.Conn, topics []string) error {
 	needsAuth := func(topic string) bool {
 		return strings.HasPrefix(topic, "community-points-user-v1.") || strings.HasPrefix(topic, "predictions-user-v1.")
 	}
@@ -364,7 +389,7 @@ func (p *PubSubClient) listenTopics(conn *websocket.Conn, topics []string) error
 		} else {
 			p.debugf("PubSub LISTEN %s", t)
 		}
-		if err := conn.WriteJSON(payload); err != nil {
+		if err := writePubSubJSON(ctx, conn, payload); err != nil {
 			return err
 		}
 	}
