@@ -163,7 +163,7 @@ Set `"auto_update": false` to disable this check. Development runs started with 
 
 ## Build From Source
 
-Go `1.27` or newer is required.
+Go `1.27.1` or newer is required.
 
 ```powershell
 go test ./...
