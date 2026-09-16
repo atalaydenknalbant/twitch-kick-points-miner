@@ -30,33 +30,37 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestPickReleaseAssetsRequiresMatchingChecksum(t *testing.T) {
+func TestPickReleaseAssetRequiresGitHubDigest(t *testing.T) {
 	name := updateAssetPrefix + "-windows-amd64.exe"
+	hash := strings.Repeat("a", 64)
 	assets := []releaseAsset{
-		{Name: name, BrowserDownloadURL: "https://example.com/app", Size: 10},
-		{Name: name + ".sha256", BrowserDownloadURL: "https://example.com/checksum"},
+		{Name: name, BrowserDownloadURL: "https://example.com/app", Size: 10, Digest: "sha256:" + hash},
 	}
-	binary, checksum, err := pickReleaseAssets(assets, "windows", "amd64")
+	binary, err := pickReleaseAsset(assets, "windows", "amd64")
 	if err != nil {
-		t.Fatalf("pickReleaseAssets returned error: %v", err)
+		t.Fatalf("pickReleaseAsset returned error: %v", err)
 	}
-	if binary.Name != name || checksum.Name != name+".sha256" {
-		t.Fatalf("unexpected assets: %#v %#v", binary, checksum)
+	if binary.Name != name || binary.Digest != "sha256:"+hash {
+		t.Fatalf("unexpected asset: %#v", binary)
 	}
 
-	if _, _, err := pickReleaseAssets(assets[:1], "windows", "amd64"); err == nil {
-		t.Fatalf("missing checksum should fail")
+	assets[0].Digest = ""
+	if _, err := pickReleaseAsset(assets, "windows", "amd64"); err == nil {
+		t.Fatal("missing GitHub digest should fail")
 	}
 }
 
-func TestParseExpectedChecksum(t *testing.T) {
+func TestReleaseAssetChecksum(t *testing.T) {
 	hash := strings.Repeat("a", 64)
-	got, err := parseExpectedChecksum(hash+"  TwitchKickPointsMiner-linux-amd64\n", "TwitchKickPointsMiner-linux-amd64")
+	got, err := releaseAssetChecksum(releaseAsset{Name: "asset", Digest: "sha256:" + hash})
 	if err != nil || got != hash {
-		t.Fatalf("parseExpectedChecksum got %q, %v", got, err)
+		t.Fatalf("releaseAssetChecksum got %q, %v", got, err)
 	}
-	if _, err := parseExpectedChecksum(hash+"  another-file\n", "wanted-file"); err == nil {
-		t.Fatalf("wrong asset checksum should fail")
+	if _, err := releaseAssetChecksum(releaseAsset{Name: "asset", Digest: "sha512:" + hash}); err == nil {
+		t.Fatal("wrong digest algorithm should fail")
+	}
+	if _, err := releaseAssetChecksum(releaseAsset{Name: "asset", Digest: "sha256:not-hex"}); err == nil {
+		t.Fatal("invalid digest should fail")
 	}
 }
 
@@ -121,8 +125,6 @@ func TestDownloadVerifiedAsset(t *testing.T) {
 		case "/binary":
 			response.Header().Set("Content-Length", fmt.Sprint(len(binaryData)))
 			_, _ = response.Write(binaryData)
-		case "/checksum":
-			_, _ = fmt.Fprintf(response, "%s  asset.exe\n", hash)
 		default:
 			http.NotFound(response, request)
 		}
@@ -131,7 +133,7 @@ func TestDownloadVerifiedAsset(t *testing.T) {
 
 	path, err := downloadVerifiedAsset(
 		releaseAsset{Name: "asset.exe", BrowserDownloadURL: server.URL + "/binary", Size: int64(len(binaryData))},
-		releaseAsset{Name: "asset.exe.sha256", BrowserDownloadURL: server.URL + "/checksum"},
+		hash,
 		t.TempDir(),
 	)
 	if err != nil {
@@ -141,5 +143,13 @@ func TestDownloadVerifiedAsset(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != string(binaryData) {
 		t.Fatalf("downloaded content got %q, %v", got, err)
+	}
+
+	if _, err := downloadVerifiedAsset(
+		releaseAsset{Name: "asset.exe", BrowserDownloadURL: server.URL + "/binary", Size: int64(len(binaryData))},
+		strings.Repeat("0", 64),
+		t.TempDir(),
+	); err == nil || !strings.Contains(err.Error(), "SHA256 mismatch") {
+		t.Fatalf("mismatched GitHub digest should fail, got %v", err)
 	}
 }

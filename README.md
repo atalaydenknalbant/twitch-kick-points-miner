@@ -154,8 +154,8 @@ Automatic updates use only the latest release from this repository. The updater 
 
 1. Compare the local semantic version with the latest GitHub release tag.
 2. Select the exact asset for the current operating system and architecture.
-3. Download its matching SHA256 file.
-4. Verify the executable before installation.
+3. Read the SHA256 digest GitHub stores with that asset.
+4. Verify the downloaded executable against the GitHub digest before installation.
 5. Start the verified executable as a temporary helper.
 6. Replace and restart the original executable without a batch script.
 

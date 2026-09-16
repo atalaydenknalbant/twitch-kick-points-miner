@@ -34,6 +34,7 @@ type releaseAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
 }
 
 type githubRelease struct {
@@ -61,13 +62,17 @@ func RunAutoUpdate() (bool, error) {
 		return false, nil
 	}
 
-	binary, checksum, err := pickReleaseAssets(release.Assets, runtime.GOOS, runtime.GOARCH)
+	binary, err := pickReleaseAsset(release.Assets, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return false, err
 	}
 
 	log.Printf("update: version %s is available", release.TagName)
-	tempPath, err := downloadVerifiedAsset(binary, checksum, filepath.Dir(exePath))
+	expected, err := releaseAssetChecksum(binary)
+	if err != nil {
+		return false, err
+	}
+	tempPath, err := downloadVerifiedAsset(binary, expected, filepath.Dir(exePath))
 	if err != nil {
 		return false, fmt.Errorf("download update: %w", err)
 	}
@@ -133,41 +138,31 @@ func fetchLatestRelease() (githubRelease, error) {
 	return release, nil
 }
 
-func pickReleaseAssets(assets []releaseAsset, goos, arch string) (releaseAsset, releaseAsset, error) {
+func pickReleaseAsset(assets []releaseAsset, goos, arch string) (releaseAsset, error) {
 	name := fmt.Sprintf("%s-%s-%s", updateAssetPrefix, goos, arch)
 	if goos == "windows" {
 		name += ".exe"
 	}
 
-	var binary, checksum releaseAsset
+	var binary releaseAsset
 	for _, asset := range assets {
-		switch {
-		case strings.EqualFold(asset.Name, name):
+		if strings.EqualFold(asset.Name, name) {
 			binary = asset
-		case strings.EqualFold(asset.Name, name+".sha256"):
-			checksum = asset
-		case strings.EqualFold(asset.Name, "checksums.txt") && checksum.Name == "":
-			checksum = asset
 		}
 	}
 	if binary.Name == "" {
-		return releaseAsset{}, releaseAsset{}, fmt.Errorf("no release asset for %s/%s", goos, arch)
-	}
-	if checksum.Name == "" {
-		return releaseAsset{}, releaseAsset{}, fmt.Errorf("release asset %s has no SHA256 checksum", binary.Name)
+		return releaseAsset{}, fmt.Errorf("no release asset for %s/%s", goos, arch)
 	}
 	if binary.Size > maxUpdateSize {
-		return releaseAsset{}, releaseAsset{}, fmt.Errorf("release asset %s is too large", binary.Name)
+		return releaseAsset{}, fmt.Errorf("release asset %s is too large", binary.Name)
 	}
-	return binary, checksum, nil
+	if _, err := releaseAssetChecksum(binary); err != nil {
+		return releaseAsset{}, err
+	}
+	return binary, nil
 }
 
-func downloadVerifiedAsset(binary, checksum releaseAsset, dir string) (string, error) {
-	expected, err := fetchExpectedChecksum(checksum.BrowserDownloadURL, binary.Name)
-	if err != nil {
-		return "", err
-	}
-
+func downloadVerifiedAsset(binary releaseAsset, expected, dir string) (string, error) {
 	req, err := newUpdateRequest(binary.BrowserDownloadURL)
 	if err != nil {
 		return "", err
@@ -233,43 +228,15 @@ func downloadVerifiedAsset(binary, checksum releaseAsset, dir string) (string, e
 	return tempPath, nil
 }
 
-func fetchExpectedChecksum(rawURL, assetName string) (string, error) {
-	req, err := newUpdateRequest(rawURL)
-	if err != nil {
-		return "", err
+func releaseAssetChecksum(asset releaseAsset) (string, error) {
+	algorithm, digest, found := strings.Cut(strings.TrimSpace(asset.Digest), ":")
+	if !found || !strings.EqualFold(algorithm, "sha256") || len(digest) != sha256.Size*2 {
+		return "", fmt.Errorf("release asset %s has no valid GitHub SHA256 digest", asset.Name)
 	}
-	resp, err := newHTTPClient(30 * time.Second).Do(req)
-	if err != nil {
-		return "", err
+	if _, err := hex.DecodeString(digest); err != nil {
+		return "", fmt.Errorf("release asset %s has no valid GitHub SHA256 digest", asset.Name)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("download checksum: unexpected status %s", resp.Status)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	return parseExpectedChecksum(string(data), assetName)
-}
-
-func parseExpectedChecksum(data, assetName string) (string, error) {
-	for _, line := range strings.Split(data, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 0 {
-			continue
-		}
-		if len(fields) > 1 && !strings.EqualFold(strings.TrimPrefix(fields[len(fields)-1], "*"), assetName) {
-			continue
-		}
-		if len(fields[0]) != sha256.Size*2 {
-			continue
-		}
-		if _, err := hex.DecodeString(fields[0]); err == nil {
-			return strings.ToLower(fields[0]), nil
-		}
-	}
-	return "", fmt.Errorf("checksum for %s not found", assetName)
+	return strings.ToLower(digest), nil
 }
 
 func newUpdateRequest(rawURL string) (*http.Request, error) {
