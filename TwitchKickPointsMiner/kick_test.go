@@ -301,6 +301,9 @@ func TestKickRefreshReportsEveryFollowedChannel(t *testing.T) {
 		}
 	}
 	logs = ansiRegexp.ReplaceAllString(logs, "")
+	if strings.Contains(logs, "[Test]") {
+		t.Fatalf("Kick status output contains an unnecessary account label:\n%s", logs)
+	}
 	for _, expected := range []string{
 		"Loading data for 3 streamer(s). Please wait...",
 		"Online (100 points) is Online!",
@@ -400,11 +403,14 @@ func TestKickAccountRuntimesUseSharedCapacity(t *testing.T) {
 }
 
 func TestKickRuntimeTracksInitialPointsAndHistory(t *testing.T) {
+	var output bytes.Buffer
+	logger := NewLogger(LoggerSettings{}, "")
+	logger.base.SetOutput(&output)
 	runtime := newKickAccountRuntime(KickAccountConfig{
 		Alias:     "Test",
 		Token:     "token",
 		Streamers: []string{"Streamer"},
-	}, KickSettings{}, NewLogger(LoggerSettings{}, ""))
+	}, KickSettings{}, logger)
 
 	runtime.updateKickPoints("streamer", 100, "")
 	snapshot := runtime.snapshot()
@@ -421,6 +427,18 @@ func TestKickRuntimeTracksInitialPointsAndHistory(t *testing.T) {
 
 	runtime.updateKickPoints("streamer", 115, "")
 	runtime.updateKickPoints("streamer", 110, "")
+	logs := ansiRegexp.ReplaceAllString(output.String(), "")
+	for _, expected := range []string{
+		constants.PlatformKickToken + " Streamer (115 points) - Reason: WATCH",
+		constants.PlatformKickToken + " Streamer (110 points) - Reason: BALANCE_CHANGE",
+	} {
+		if !strings.Contains(logs, expected) {
+			t.Fatalf("Kick reward does not match Twitch formatting %q:\n%s", expected, logs)
+		}
+	}
+	if strings.Contains(logs, "[Test]") || strings.Contains(logs, "| Reason:") {
+		t.Fatalf("Kick reward contains the old account label or separator:\n%s", logs)
+	}
 
 	streamer = runtime.snapshot().Streamers[0]
 	if streamer.Points != 110 || streamer.InitialPoints != 100 {

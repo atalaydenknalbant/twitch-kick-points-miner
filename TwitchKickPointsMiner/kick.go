@@ -201,7 +201,7 @@ func (m *KickMiner) Start(stop <-chan struct{}) {
 	for _, account := range m.settings.Accounts {
 		account := account
 		if strings.TrimSpace(account.Token) == "" {
-			m.logger.Printf("%s [%s] skipped: token missing", constants.PlatformKickToken, account.displayName())
+			m.logger.Printf("%s skipped: token missing", constants.PlatformKickToken)
 			continue
 		}
 		runtime := newKickAccountRuntime(account, m.settings, m.logger, m.watchers)
@@ -273,9 +273,9 @@ func (m *KickMiner) LogSummary() {
 			points := formatKickPoints(streamer.Points, streamer.HasPoints, hide)
 			if hide {
 				name = "[hidden]"
-				m.logger.EmojiPrintf(":moneybag:", "%s [%s] %s (%s%s%s points), Total Points [hidden]", constants.PlatformKickToken, account.Alias, name, colorCyan, points, colorReset)
+				m.logger.EmojiPrintf(":moneybag:", "%s %s (%s%s%s points), Total Points [hidden]", constants.PlatformKickToken, name, colorCyan, points, colorReset)
 			} else {
-				m.logger.EmojiPrintf(":moneybag:", "%s [%s] %s (%s%s%s points), Total Points %s%s%d%s", constants.PlatformKickToken, account.Alias, name, colorCyan, points, colorReset, signColor, sign, value, colorReset)
+				m.logger.EmojiPrintf(":moneybag:", "%s %s (%s%s%s points), Total Points %s%s%d%s", constants.PlatformKickToken, name, colorCyan, points, colorReset, signColor, sign, value, colorReset)
 			}
 			for reason, entry := range streamer.History {
 				if hide {
@@ -390,9 +390,9 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 	}()
 
 	if r.followed {
-		r.logger.Printf("%s [%s] monitoring followed channels, max active %d", constants.PlatformKickToken, r.account.displayName(), r.maxActiveWatchers())
+		r.logger.Printf("%s monitoring followed channels, max active %d", constants.PlatformKickToken, r.maxActiveWatchers())
 	} else {
-		r.logger.Printf("%s [%s] monitoring %d configured streamer(s), max active %d", constants.PlatformKickToken, r.account.displayName(), len(r.order), r.maxActiveWatchers())
+		r.logger.Printf("%s monitoring %d configured streamer(s), max active %d", constants.PlatformKickToken, len(r.order), r.maxActiveWatchers())
 	}
 	loadStartedAt := time.Now()
 	r.refresh(ctx)
@@ -432,7 +432,7 @@ func (r *kickAccountRuntime) checkDailyRewards(ctx context.Context) {
 	}
 	rewards, err := r.client.dailyRewards(ctx)
 	if err != nil {
-		r.logger.Debugf("%s [%s] daily reward check failed: %v", constants.PlatformKickToken, r.account.displayName(), err)
+		r.logger.Debugf("%s daily reward check failed: %v", constants.PlatformKickToken, err)
 		return
 	}
 	for _, reward := range rewards {
@@ -447,13 +447,13 @@ func (r *kickAccountRuntime) checkDailyRewards(ctx context.Context) {
 			continue
 		}
 		if err := r.client.claimDailyReward(ctx, reward.ID); err != nil {
-			r.logger.Errorf("%s [%s] daily reward claim failed: %v", constants.PlatformKickToken, r.account.displayName(), err)
+			r.logger.Errorf("%s daily reward claim failed: %v", constants.PlatformKickToken, err)
 			continue
 		}
 		r.mu.Lock()
 		r.claimedRewards[key] = struct{}{}
 		r.mu.Unlock()
-		r.logger.EmojiPrintf(":gift:", "%s [%s] Daily reward claimed!", constants.PlatformKickToken, r.account.displayName())
+		r.logger.EmojiPrintf(":gift:", "%s Daily reward claimed!", constants.PlatformKickToken)
 	}
 }
 
@@ -462,15 +462,14 @@ func (r *kickAccountRuntime) refresh(ctx context.Context) {
 	if r.followed {
 		followed, err := r.client.followedChannels(ctx)
 		if err != nil {
-			r.logger.Printf("%s [%s] followed channels refresh failed: %v", constants.PlatformKickToken, r.account.displayName(), err)
+			r.logger.Printf("%s followed channels refresh failed: %v", constants.PlatformKickToken, err)
 		} else {
 			var removed []string
 			added, removed = r.syncStreamers(followed)
 			if r.isLoaded() && (len(added) > 0 || len(removed) > 0) {
 				r.logger.Printf(
-					"%s [%s] followed channels refreshed: %d total, %d added, %d removed",
+					"%s followed channels refreshed: %d total, %d added, %d removed",
 					constants.PlatformKickToken,
-					r.account.displayName(),
 					len(followed),
 					len(added),
 					len(removed),
@@ -483,9 +482,8 @@ func (r *kickAccountRuntime) refresh(ctx context.Context) {
 	if !r.isLoaded() {
 		r.logger.EmojiPrintf(
 			":hourglass_flowing_sand:",
-			"%s [%s] Loading data for %d streamer(s). Please wait...",
+			"%s Loading data for %d streamer(s). Please wait...",
 			constants.PlatformKickToken,
-			r.account.displayName(),
 			len(names),
 		)
 	}
@@ -521,7 +519,7 @@ func (r *kickAccountRuntime) pollStreamers(ctx context.Context, names []string) 
 				}
 				info, err := r.client.channelInfo(ctx, name)
 				if err != nil {
-					r.logger.Debugf("%s [%s] online check %s: %v", constants.PlatformKickToken, r.account.displayName(), name, err)
+					r.logger.Debugf("%s online check %s: %v", constants.PlatformKickToken, name, err)
 				} else {
 					r.updateStreamerInfo(name, info)
 				}
@@ -581,7 +579,7 @@ func (r *kickAccountRuntime) syncStreamers(names []string) ([]string, []string) 
 		if watcher.cancel != nil {
 			watcher.cancel()
 		}
-		r.logger.Printf("%s [%s] stopped watching %s", constants.PlatformKickToken, r.account.displayName(), watcher.name)
+		r.logger.Printf("%s stopped watching %s", constants.PlatformKickToken, watcher.name)
 	}
 	return added, removed
 }
@@ -756,7 +754,7 @@ func (r *kickAccountRuntime) startStreamer(parent context.Context, name string) 
 	}
 	r.mu.Unlock()
 
-	r.logger.Printf("%s [%s] started watching %s", constants.PlatformKickToken, r.account.displayName(), name)
+	r.logger.Printf("%s started watching %s", constants.PlatformKickToken, name)
 	go r.watchStreamer(ctx, name, channelID, userID, streamID, generation)
 }
 
@@ -781,7 +779,7 @@ func (r *kickAccountRuntime) stopStreamer(name string) {
 	if cancel != nil {
 		cancel()
 	}
-	r.logger.Printf("%s [%s] stopped watching %s", constants.PlatformKickToken, r.account.displayName(), name)
+	r.logger.Printf("%s stopped watching %s", constants.PlatformKickToken, name)
 }
 
 func (r *kickAccountRuntime) stopAll() {
@@ -810,7 +808,7 @@ func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, cha
 	for ctx.Err() == nil {
 		info, err := r.client.channelInfo(ctx, name)
 		if err != nil {
-			r.logger.Printf("%s [%s] %s refresh failed: %v", constants.PlatformKickToken, r.account.displayName(), name, err)
+			r.logger.Printf("%s %s refresh failed: %v", constants.PlatformKickToken, name, err)
 			if !sleepContext(ctx, time.Duration(r.settings.ReconnectCooldownSeconds)*time.Second) {
 				return
 			}
@@ -824,7 +822,7 @@ func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, cha
 		}
 		if !info.Online || info.ChannelID == 0 || info.StreamID == 0 {
 			r.updateStreamerInfo(name, info)
-			r.logger.Printf("%s [%s] %s is offline; watcher stopped until next online check", constants.PlatformKickToken, r.account.displayName(), name)
+			r.logger.Printf("%s %s is offline; watcher stopped until next online check", constants.PlatformKickToken, name)
 			return
 		}
 		if info.UserID == 0 {
@@ -840,7 +838,7 @@ func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, cha
 			return
 		}
 		if err != nil {
-			r.logger.Printf("%s [%s] %s websocket ended: %v", constants.PlatformKickToken, r.account.displayName(), name, err)
+			r.logger.Printf("%s %s websocket ended: %v", constants.PlatformKickToken, name, err)
 		}
 		if !sleepContext(ctx, time.Duration(r.settings.ReconnectCooldownSeconds)*time.Second) {
 			return
@@ -918,7 +916,7 @@ func (r *kickAccountRuntime) connectAndWatch(ctx context.Context, name string, i
 func (r *kickAccountRuntime) pollKickPoints(ctx context.Context, name string) {
 	points, ok, err := r.client.points(ctx, name)
 	if err != nil {
-		r.logger.Debugf("%s [%s] points %s: %v", constants.PlatformKickToken, r.account.displayName(), name, err)
+		r.logger.Debugf("%s points %s: %v", constants.PlatformKickToken, name, err)
 		return
 	}
 	if !ok {
@@ -983,7 +981,7 @@ func (r *kickAccountRuntime) logLoaded(duration time.Duration) {
 	for _, streamer := range snapshot.Streamers {
 		r.logStatus(streamer)
 	}
-	r.logger.EmojiPrintf(":white_check_mark:", "%s [%s] %d Streamer loaded! (%s)", constants.PlatformKickToken, snapshot.Alias, len(snapshot.Streamers), formatLoadDuration(duration))
+	r.logger.EmojiPrintf(":white_check_mark:", "%s %d Streamer loaded! (%s)", constants.PlatformKickToken, len(snapshot.Streamers), formatLoadDuration(duration))
 }
 
 func (r *kickAccountRuntime) snapshot() kickAccountSnapshot {
@@ -1053,7 +1051,7 @@ func (r *kickAccountRuntime) logStatus(streamer kickStreamerSnapshot) {
 		name = "[hidden]"
 	}
 	if !streamer.StatusKnown {
-		r.logger.EmojiPrintf(":warning:", "%s [%s] %s (%s points) status is Unavailable!", constants.PlatformKickToken, r.account.displayName(), name, formatKickPoints(streamer.Points, streamer.HasPoints, hide))
+		r.logger.EmojiPrintf(":warning:", "%s %s (%s points) status is Unavailable!", constants.PlatformKickToken, name, formatKickPoints(streamer.Points, streamer.HasPoints, hide))
 		return
 	}
 
@@ -1069,7 +1067,7 @@ func (r *kickAccountRuntime) logStatus(streamer kickStreamerSnapshot) {
 	if streamer.Watching {
 		extra = " | Watching"
 	}
-	r.logger.EmojiPrintf(emoji, "%s [%s] %s (%s points) is %s%s%s!%s", constants.PlatformKickToken, r.account.displayName(), name, formatKickPoints(streamer.Points, streamer.HasPoints, hide), statusColor, status, constants.ColorReset, extra)
+	r.logger.EmojiPrintf(emoji, "%s %s (%s points) is %s%s%s!%s", constants.PlatformKickToken, name, formatKickPoints(streamer.Points, streamer.HasPoints, hide), statusColor, status, constants.ColorReset, extra)
 }
 
 func (r *kickAccountRuntime) logPointsDelta(streamer kickStreamerSnapshot, delta int, reason string) {
@@ -1085,13 +1083,12 @@ func (r *kickAccountRuntime) logPointsDelta(streamer kickStreamerSnapshot, delta
 	sign, valueColor, value := signedKickDelta(delta)
 	r.logger.EmojiPrintf(
 		":rocket:",
-		"%s%s%d%s → %s [%s] %s (%s%s%s points) | Reason: %s",
+		"%s%s%d%s → %s %s (%s%s%s points) - Reason: %s",
 		valueColor,
 		sign,
 		value,
 		colorReset,
 		constants.PlatformKickToken,
-		r.account.displayName(),
 		name,
 		colorCyan,
 		points,
