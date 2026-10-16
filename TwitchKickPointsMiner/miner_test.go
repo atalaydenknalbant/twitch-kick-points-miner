@@ -871,6 +871,66 @@ func TestSleepWithStop(t *testing.T) {
 	}
 }
 
+func TestPlatformWatcherLimitsKeepOriginalTotal(t *testing.T) {
+	tests := []struct {
+		name          string
+		twitchEnabled bool
+		kickEnabled   bool
+		wantTwitch    int
+		wantKick      int
+	}{
+		{name: "twitch only", twitchEnabled: true, wantTwitch: 2},
+		{name: "kick only", kickEnabled: true, wantKick: 2},
+		{name: "both", twitchEnabled: true, kickEnabled: true, wantTwitch: 1, wantKick: 1},
+		{name: "neither"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			twitchLimit, kickLimit := platformWatcherLimits(test.twitchEnabled, test.kickEnabled)
+			if twitchLimit != test.wantTwitch || kickLimit != test.wantKick {
+				t.Fatalf("limits got Twitch=%d Kick=%d, want Twitch=%d Kick=%d", twitchLimit, kickLimit, test.wantTwitch, test.wantKick)
+			}
+			if twitchLimit+kickLimit > maxConcurrentWatchers {
+				t.Fatalf("combined watcher limit got %d", twitchLimit+kickLimit)
+			}
+		})
+	}
+}
+
+func TestKickWatchersConfiguredRequiresUsableAccount(t *testing.T) {
+	if kickWatchersConfigured(KickSettings{Enabled: true}) {
+		t.Fatal("Kick without an account should not reserve watcher capacity")
+	}
+	if kickWatchersConfigured(KickSettings{Enabled: true, Accounts: []KickAccountConfig{{Token: "   "}}}) {
+		t.Fatal("Kick with a blank token should not reserve watcher capacity")
+	}
+	if !kickWatchersConfigured(KickSettings{Enabled: true, Accounts: []KickAccountConfig{{Token: "token"}}}) {
+		t.Fatal("Kick with a token should reserve watcher capacity")
+	}
+}
+
+func TestPickStreamersToWatchSharesCapacityWithKick(t *testing.T) {
+	onlineAt := time.Now().Add(-time.Minute)
+	streamers := []*entities.Streamer{
+		{Username: "first", IsOnline: true, OnlineAt: onlineAt},
+		{Username: "second", IsOnline: true, OnlineAt: onlineAt},
+	}
+	m := &Miner{
+		TwitchEnabled: true,
+		KickSettings: KickSettings{
+			Enabled:  true,
+			Accounts: []KickAccountConfig{{Token: "token"}},
+		},
+		watchPriorities: []watchPriority{watchPriorityOrder},
+	}
+
+	got := m.pickStreamersToWatch(streamers)
+	if len(got) != 1 || got[0] != streamers[0] {
+		t.Fatalf("shared capacity selected %#v", got)
+	}
+}
+
 func TestPickStreamersToWatchSkipsSubscribedPriorityWhenNone(t *testing.T) {
 	onlineAt := time.Now().Add(-time.Minute)
 	streamers := []*entities.Streamer{

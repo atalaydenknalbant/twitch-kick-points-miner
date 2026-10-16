@@ -60,6 +60,31 @@ const (
 
 const maxConcurrentWatchers = 2
 
+func platformWatcherLimits(twitchEnabled, kickEnabled bool) (int, int) {
+	if twitchEnabled && kickEnabled {
+		return 1, maxConcurrentWatchers - 1
+	}
+	if twitchEnabled {
+		return maxConcurrentWatchers, 0
+	}
+	if kickEnabled {
+		return 0, maxConcurrentWatchers
+	}
+	return 0, 0
+}
+
+func kickWatchersConfigured(settings KickSettings) bool {
+	if !settings.Enabled {
+		return false
+	}
+	for _, account := range settings.Accounts {
+		if strings.TrimSpace(account.Token) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func defaultWatchPriorities() []watchPriority {
 	return []watchPriority{
 		watchPriorityStreak,
@@ -172,6 +197,11 @@ type Miner struct {
 	warmStartCachePath         string
 	activeStreakWatches        map[string]activeStreakWatch
 	activeStreakMu             sync.Mutex
+	sessionSummaryInterval     time.Duration
+	summaryMu                  sync.Mutex
+	summaryOnline              map[*entities.Streamer]bool
+	summaryWatching            map[*entities.Streamer]struct{}
+	summaryPoints              map[*entities.Streamer]sessionPointBalance
 }
 
 func NewMiner(username, password string, claimDropsStartup bool, disableCertCheck bool, loggerSettings LoggerSettings, streamerSettings entities.StreamerSettings, streamerOverrides map[string]entities.StreamerSettings, priorityNames []string, streamerExclude []string, gamePriority []string, gameExclude []string, disableAtInNickname bool, showGameInfo bool, logWatchQueue bool, watchStreakWarmStartCache bool, showDropsProgress bool) *Miner {
@@ -218,6 +248,7 @@ func NewMiner(username, password string, claimDropsStartup bool, disableCertChec
 		warmStartCachePath:         warmStartCachePath,
 		activeStreakWatches:        make(map[string]activeStreakWatch),
 		TwitchEnabled:              true,
+		sessionSummaryInterval:     30 * time.Minute,
 	}
 }
 
@@ -491,7 +522,8 @@ func (m *Miner) run(streamers []string, useFollowers bool, order entities.Follow
 	m.stop = make(chan struct{})
 	m.initialPoints = make(map[string]int)
 	if m.KickSettings.Enabled {
-		m.kickMiner = NewKickMiner(m.KickSettings, m.logger)
+		_, kickWatcherLimit := platformWatcherLimits(m.TwitchEnabled, kickWatchersConfigured(m.KickSettings))
+		m.kickMiner = newKickMiner(m.KickSettings, m.logger, kickWatcherLimit)
 		m.kickMiner.Start(m.stop)
 	}
 	if !m.TwitchEnabled {
@@ -593,8 +625,21 @@ func (m *Miner) waitForShutdown(sessionID string) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
-	<-sigCh
-	m.shutdown(sessionID)
+	var summaryTick <-chan time.Time
+	if m.sessionSummaryInterval > 0 {
+		ticker := time.NewTicker(m.sessionSummaryInterval)
+		defer ticker.Stop()
+		summaryTick = ticker.C
+	}
+	for {
+		select {
+		case <-sigCh:
+			m.shutdown(sessionID)
+			return
+		case now := <-summaryTick:
+			m.logSessionSummary(now)
+		}
+	}
 }
 
 func (m *Miner) logStartupHeader(streamers []string, useFollowers bool) {
@@ -632,7 +677,6 @@ func (m *Miner) logStartupHeader(streamers []string, useFollowers bool) {
 		constants.ProductTagline,
 		constants.PlatformTwitchToken+" "+twitchMode,
 		constants.PlatformKickToken+" "+kickMode,
-		constants.BuildLabel,
 	)
 }
 
@@ -766,6 +810,7 @@ func (m *Miner) minuteWatcher(streamers []*entities.Streamer, stop <-chan struct
 		}
 
 		watchList := m.pickStreamersToWatch(streamers)
+		m.recordSummaryWatching(watchList)
 		if len(watchList) == 0 {
 			if m.sleepWithStop(20*time.Second, stop) {
 				return
@@ -1022,6 +1067,11 @@ func (m *Miner) resolveTimedOutStreak(streamer *entities.Streamer, now time.Time
 
 func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities.Streamer {
 	now := time.Now()
+	kickEnabled := kickWatchersConfigured(m.KickSettings)
+	twitchWatcherLimit, _ := platformWatcherLimits(m.TwitchEnabled, kickEnabled)
+	if twitchWatcherLimit == 0 && !m.KickSettings.Enabled {
+		twitchWatcherLimit = maxConcurrentWatchers
+	}
 	type candidate struct {
 		idx           int
 		rank          int
@@ -1100,12 +1150,12 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 		return out
 	}
 
-	selected := make([]int, 0, maxConcurrentWatchers)
+	selected := make([]int, 0, twitchWatcherLimit)
 	seen := make(map[int]struct{})
 	selectedGames := make(map[string]struct{})
 	selectedReason := make(map[int]string)
 	add := func(c candidate, reason string, force bool) {
-		if len(selected) >= maxConcurrentWatchers {
+		if len(selected) >= twitchWatcherLimit {
 			return
 		}
 		if _, ok := seen[c.idx]; ok {
@@ -1142,7 +1192,7 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 	pick := func(list []candidate, includeGameRank bool, less func(a, b candidate) bool, reason string, force bool) {
 		for _, c := range sortCandidates(list, less, includeGameRank) {
 			add(c, reason, force)
-			if len(selected) >= maxConcurrentWatchers {
+			if len(selected) >= twitchWatcherLimit {
 				break
 			}
 		}
@@ -1169,7 +1219,7 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 		}
 		for _, c := range sortCandidates(activeStreaks, nil, false) {
 			add(c, "ACTIVE_STREAK", true)
-			if len(selected) >= maxConcurrentWatchers {
+			if len(selected) >= twitchWatcherLimit {
 				break
 			}
 		}
@@ -1179,7 +1229,7 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 	skipEarlyStreak := len(m.gamePriority) > 0 && !hasPriorityGameStreak
 
 	for _, priority := range m.watchPriorities {
-		if len(selected) >= maxConcurrentWatchers {
+		if len(selected) >= twitchWatcherLimit {
 			break
 		}
 		switch priority {
@@ -1253,8 +1303,13 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 			break
 		}
 		if streakPick != nil {
-			if len(selected) < maxConcurrentWatchers {
+			if len(selected) < twitchWatcherLimit {
 				add(*streakPick, "FORCE_STREAK_SLOT2", true)
+			} else if twitchWatcherLimit == 1 {
+				selected = selected[:0]
+				seen = make(map[int]struct{})
+				selectedGames = make(map[string]struct{})
+				add(*streakPick, "FORCE_STREAK_SLOT1", true)
 			} else {
 				keepIdx := selected[0]
 				selected = selected[:0]
@@ -1263,7 +1318,7 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 				if keepCand, ok := candidateByIdx[keepIdx]; ok {
 					add(keepCand, selectedReason[keepIdx], false)
 				}
-				if len(selected) < maxConcurrentWatchers {
+				if len(selected) < twitchWatcherLimit {
 					if _, ok := seen[streakPick.idx]; !ok {
 						seen[streakPick.idx] = struct{}{}
 						if streakPick.game != "" {
@@ -1285,7 +1340,7 @@ func (m *Miner) pickStreamersToWatch(streamers []*entities.Streamer) []*entities
 		}
 	}
 
-	if len(selected) < maxConcurrentWatchers {
+	if len(selected) < twitchWatcherLimit {
 		pick(candidates, true, nil, "FALLBACK", false)
 	}
 
@@ -1919,8 +1974,10 @@ func formatDuration(d time.Duration) string {
 func (m *Miner) handlePointsUpdate(streamer *entities.Streamer, previous int, reason string) {
 	if !streamer.PointsInit {
 		streamer.PointsInit = true
+		m.recordSummaryBalance(streamer, streamer.ChannelPoints, streamer.ChannelPoints)
 		return
 	}
+	m.recordSummaryBalance(streamer, previous, streamer.ChannelPoints)
 	delta := streamer.ChannelPoints - previous
 	m.logPointsDelta(streamer, delta, reason)
 }
@@ -2008,6 +2065,7 @@ func (m *Miner) handlePubSubGain(streamer *entities.Streamer, earned int, reason
 	}
 
 	streamer.ChannelPoints = newBalance
+	m.recordSummaryBalance(streamer, prev, newBalance)
 	if !streamer.PointsInit {
 		streamer.PointsInit = true
 	}
@@ -2060,6 +2118,7 @@ func (m *Miner) handlePubSubPresence(streamer *entities.Streamer, online bool, r
 }
 
 func (m *Miner) setPresence(streamer *entities.Streamer, online bool, reason string) {
+	m.recordSummaryPresence(streamer, online)
 	prevKnown := streamer.PresenceKnown
 	prevOnline := streamer.IsOnline
 	now := time.Now()

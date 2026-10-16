@@ -1,0 +1,6 @@
+/config.json
+/cookies/
+/log/
+/dist/
+/*.exe
+/build_icon_windows_*.syso

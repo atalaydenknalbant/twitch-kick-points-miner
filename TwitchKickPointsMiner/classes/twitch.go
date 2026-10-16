@@ -848,6 +848,7 @@ func (t *Twitch) SendMinuteWatched(streamer *entities.Streamer) error {
 	if err := t.UpdateStream(streamer); err != nil {
 		return err
 	}
+	t.updatePlaybackStatus(streamer, t.sendWatchPlaylist(streamer))
 	if streamer.Stream.SpadeURL == "" {
 		if err := t.GetSpadeURL(streamer); err != nil {
 			return err

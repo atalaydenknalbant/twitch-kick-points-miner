@@ -57,6 +57,8 @@ func TestStreamUpdateResetsWatchStreakStateOnBroadcastChange(t *testing.T) {
 	stream.WatchCount = 2
 	stream.CreatedAt = firstCreatedAt
 	stream.lastMinuteUpdate = time.Now()
+	stream.PlaylistURL = "https://video.example/previous.m3u8"
+	stream.PlaybackError = "previous playback failure"
 
 	secondCreatedAt := firstCreatedAt.Add(2 * time.Hour)
 	stream.Update("broadcast-2", "new title", map[string]interface{}{"displayName": "Game"}, nil, 50, secondCreatedAt, "drop-tag")
@@ -75,6 +77,19 @@ func TestStreamUpdateResetsWatchStreakStateOnBroadcastChange(t *testing.T) {
 	}
 	if !stream.lastMinuteUpdate.IsZero() {
 		t.Fatalf("lastMinuteUpdate should reset on new broadcast")
+	}
+	if stream.PlaylistURL != "" || stream.PlaybackError != "" {
+		t.Fatal("new broadcast retained an expired playback playlist or failure")
+	}
+}
+
+func TestStreamUpdatePreservesPlaylistForSameBroadcast(t *testing.T) {
+	stream := NewStream()
+	stream.Update("broadcast", "title", nil, nil, 0, time.Time{}, "")
+	stream.PlaylistURL = "https://video.example/current.m3u8"
+	stream.Update("broadcast", "updated title", nil, nil, 0, time.Time{}, "")
+	if stream.PlaylistURL != "https://video.example/current.m3u8" {
+		t.Fatal("metadata refresh unnecessarily invalidated the playback playlist")
 	}
 }
 

@@ -127,14 +127,66 @@ type KickMiner struct {
 	logger   *Logger
 	mu       sync.Mutex
 	runtimes []*kickAccountRuntime
+	watchers *kickWatcherCapacity
 }
 
 func NewKickMiner(settings KickSettings, logger *Logger) *KickMiner {
+	return newKickMiner(settings, logger, maxConcurrentWatchers)
+}
+
+func newKickMiner(settings KickSettings, logger *Logger, watcherLimit int) *KickMiner {
 	settings.Default()
 	return &KickMiner{
 		settings: settings,
 		logger:   logger,
+		watchers: newKickWatcherCapacity(watcherLimit),
 	}
+}
+
+type kickWatcherCapacity struct {
+	mu     sync.Mutex
+	limit  int
+	active int
+}
+
+func newKickWatcherCapacity(limit int) *kickWatcherCapacity {
+	if limit < 0 {
+		limit = 0
+	}
+	return &kickWatcherCapacity{limit: limit}
+}
+
+func (c *kickWatcherCapacity) tryAcquire() bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active >= c.limit {
+		return false
+	}
+	c.active++
+	return true
+}
+
+func (c *kickWatcherCapacity) release() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.active > 0 {
+		c.active--
+	}
+	c.mu.Unlock()
+}
+
+func (c *kickWatcherCapacity) maximum() int {
+	if c == nil {
+		return maxConcurrentWatchers
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.limit
 }
 
 func (m *KickMiner) Start(stop <-chan struct{}) {
@@ -152,7 +204,7 @@ func (m *KickMiner) Start(stop <-chan struct{}) {
 			m.logger.Printf("%s [%s] skipped: token missing", constants.PlatformKickToken, account.displayName())
 			continue
 		}
-		runtime := newKickAccountRuntime(account, m.settings, m.logger)
+		runtime := newKickAccountRuntime(account, m.settings, m.logger, m.watchers)
 		m.mu.Lock()
 		m.runtimes = append(m.runtimes, runtime)
 		m.mu.Unlock()
@@ -250,6 +302,8 @@ type kickAccountRuntime struct {
 	loaded            bool
 	rebalanceRequests chan struct{}
 	claimedRewards    map[string]struct{}
+	watchers          *kickWatcherCapacity
+	nextGeneration    uint64
 }
 
 type kickStreamerState struct {
@@ -270,6 +324,8 @@ type kickStreamerState struct {
 	CancelFunc       context.CancelFunc
 	RecoveryStreamID int64
 	RecoveryUntil    time.Time
+	watchGeneration  uint64
+	watchSlotHeld    bool
 }
 
 type kickPointsHistoryEntry struct {
@@ -294,7 +350,10 @@ type kickStreamerSnapshot struct {
 	History          map[string]kickPointsHistoryEntry
 }
 
-func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, logger *Logger) *kickAccountRuntime {
+func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, logger *Logger, capacities ...*kickWatcherCapacity) *kickAccountRuntime {
+	if account.MaxConcurrent <= 0 {
+		account.MaxConcurrent = maxConcurrentWatchers
+	}
 	account.Streamers = normalizeStreamerList(account.Streamers)
 	followed := len(account.Streamers) == 0
 	streamers := make(map[string]*kickStreamerState, len(account.Streamers))
@@ -303,6 +362,10 @@ func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, log
 			Name:     name,
 			Priority: idx,
 		}
+	}
+	watchers := newKickWatcherCapacity(account.MaxConcurrent)
+	if len(capacities) > 0 && capacities[0] != nil {
+		watchers = capacities[0]
 	}
 	return &kickAccountRuntime{
 		account:           account,
@@ -314,6 +377,7 @@ func newKickAccountRuntime(account KickAccountConfig, settings KickSettings, log
 		followed:          followed,
 		rebalanceRequests: make(chan struct{}, 1),
 		claimedRewards:    make(map[string]struct{}),
+		watchers:          watchers,
 	}
 }
 
@@ -326,9 +390,9 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 	}()
 
 	if r.followed {
-		r.logger.Printf("%s [%s] monitoring followed channels, max active %d", constants.PlatformKickToken, r.account.displayName(), r.account.MaxConcurrent)
+		r.logger.Printf("%s [%s] monitoring followed channels, max active %d", constants.PlatformKickToken, r.account.displayName(), r.maxActiveWatchers())
 	} else {
-		r.logger.Printf("%s [%s] monitoring %d configured streamer(s), max active %d", constants.PlatformKickToken, r.account.displayName(), len(r.order), r.account.MaxConcurrent)
+		r.logger.Printf("%s [%s] monitoring %d configured streamer(s), max active %d", constants.PlatformKickToken, r.account.displayName(), len(r.order), r.maxActiveWatchers())
 	}
 	loadStartedAt := time.Now()
 	r.refresh(ctx)
@@ -352,6 +416,14 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 			r.rebalance(ctx)
 		}
 	}
+}
+
+func (r *kickAccountRuntime) maxActiveWatchers() int {
+	limit := r.watchers.maximum()
+	if r.account.MaxConcurrent < limit {
+		return r.account.MaxConcurrent
+	}
+	return limit
 }
 
 func (r *kickAccountRuntime) checkDailyRewards(ctx context.Context) {
@@ -468,8 +540,9 @@ func (r *kickAccountRuntime) syncStreamers(names []string) ([]string, []string) 
 	}
 
 	type stoppedWatcher struct {
-		name   string
-		cancel context.CancelFunc
+		name     string
+		cancel   context.CancelFunc
+		slotHeld bool
 	}
 	stopped := make([]stoppedWatcher, 0)
 	added := make([]string, 0)
@@ -482,9 +555,10 @@ func (r *kickAccountRuntime) syncStreamers(names []string) ([]string, []string) 
 		}
 		removed = append(removed, name)
 		if st := r.streamers[name]; st != nil && st.Watching {
-			stopped = append(stopped, stoppedWatcher{name: name, cancel: st.CancelFunc})
+			stopped = append(stopped, stoppedWatcher{name: name, cancel: st.CancelFunc, slotHeld: st.watchSlotHeld})
 			st.Watching = false
 			st.CancelFunc = nil
+			st.watchSlotHeld = false
 		}
 		delete(r.streamers, name)
 	}
@@ -501,6 +575,9 @@ func (r *kickAccountRuntime) syncStreamers(names []string) ([]string, []string) 
 	r.mu.Unlock()
 
 	for _, watcher := range stopped {
+		if watcher.slotHeld {
+			r.watchers.release()
+		}
 		if watcher.cancel != nil {
 			watcher.cancel()
 		}
@@ -658,9 +735,17 @@ func (r *kickAccountRuntime) startStreamer(parent context.Context, name string) 
 		r.mu.Unlock()
 		return
 	}
+	if !r.watchers.tryAcquire() {
+		r.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(parent)
 	st.Watching = true
 	st.CancelFunc = cancel
+	st.watchSlotHeld = true
+	r.nextGeneration++
+	generation := r.nextGeneration
+	st.watchGeneration = generation
 	channelID := st.ChannelID
 	userID := st.UserID
 	streamID := st.StreamID
@@ -672,7 +757,7 @@ func (r *kickAccountRuntime) startStreamer(parent context.Context, name string) 
 	r.mu.Unlock()
 
 	r.logger.Printf("%s [%s] started watching %s", constants.PlatformKickToken, r.account.displayName(), name)
-	go r.watchStreamer(ctx, name, channelID, userID, streamID)
+	go r.watchStreamer(ctx, name, channelID, userID, streamID, generation)
 }
 
 func (r *kickAccountRuntime) stopStreamer(name string) {
@@ -683,11 +768,16 @@ func (r *kickAccountRuntime) stopStreamer(name string) {
 		return
 	}
 	cancel := st.CancelFunc
+	slotHeld := st.watchSlotHeld
 	st.CancelFunc = nil
 	st.Watching = false
+	st.watchSlotHeld = false
 	st.RecoveryStreamID = 0
 	st.RecoveryUntil = time.Time{}
 	r.mu.Unlock()
+	if slotHeld {
+		r.watchers.release()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -700,14 +790,20 @@ func (r *kickAccountRuntime) stopAll() {
 	}
 }
 
-func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, channelID, userID, streamID int64) {
+func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, channelID, userID, streamID int64, generation uint64) {
 	defer func() {
 		r.mu.Lock()
-		if st := r.streamers[name]; st != nil {
+		slotHeld := false
+		if st := r.streamers[name]; st != nil && st.watchGeneration == generation {
 			st.Watching = false
 			st.CancelFunc = nil
+			slotHeld = st.watchSlotHeld
+			st.watchSlotHeld = false
 		}
 		r.mu.Unlock()
+		if slotHeld {
+			r.watchers.release()
+		}
 		r.requestRebalance()
 	}()
 
@@ -962,16 +1058,18 @@ func (r *kickAccountRuntime) logStatus(streamer kickStreamerSnapshot) {
 	}
 
 	status := "Offline"
+	statusColor := constants.ColorRed
 	emoji := ":sleeping:"
 	if streamer.Online {
 		status = "Online"
+		statusColor = constants.ColorGreen
 		emoji = ":partying_face:"
 	}
 	extra := ""
 	if streamer.Watching {
 		extra = " | Watching"
 	}
-	r.logger.EmojiPrintf(emoji, "%s [%s] %s (%s points) is %s!%s", constants.PlatformKickToken, r.account.displayName(), name, formatKickPoints(streamer.Points, streamer.HasPoints, hide), status, extra)
+	r.logger.EmojiPrintf(emoji, "%s [%s] %s (%s points) is %s%s%s!%s", constants.PlatformKickToken, r.account.displayName(), name, formatKickPoints(streamer.Points, streamer.HasPoints, hide), statusColor, status, constants.ColorReset, extra)
 }
 
 func (r *kickAccountRuntime) logPointsDelta(streamer kickStreamerSnapshot, delta int, reason string) {

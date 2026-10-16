@@ -245,6 +245,7 @@ type config struct {
 	IRCMode                    string             `json:"chat_presence"`
 	DisableAtInNickname        bool               `json:"disable_at_in_nickname"`
 	ShowDropsProgress          bool               `json:"show_drops_progress"`
+	SessionSummaryInterval     int                `json:"session_summary_interval"`
 	Streamers                  []string           `json:"streamers"`
 	StreamersExclude           []string           `json:"streamers_exclude"`
 	GamePriority               []string           `json:"game_priority"`
@@ -411,6 +412,7 @@ func defaultConfig() map[string]interface{} {
 		"chat_presence":                 "ONLINE",
 		"disable_at_in_nickname":        false,
 		"show_drops_progress":           false,
+		"session_summary_interval":      1800,
 		"timezone":                      nil,
 		"privacy": map[string]interface{}{
 			"anonymize_logs": false,
@@ -916,7 +918,17 @@ func main() {
 	dataDirFlag := flag.String("data-dir", "", "Directory for config/cookies/log (default: current directory if config.json exists; otherwise the executable directory)")
 	connectKickFlag := flag.Bool("connect-kick", false, "Run the guided Kick credential setup")
 	setupTwitchFlag := flag.Bool("setup-twitch", false, "Run the Twitch Connect or Skip setup")
+	previewBannerFlag := flag.Bool("preview-banner", false, "Show the startup artwork and exit")
+	versionFlag := flag.Bool("version", false, "Show the application version and exit")
 	flag.Parse()
+	if *versionFlag {
+		fmt.Printf("%s v%s\n", constants.ProductName, constants.Version)
+		return
+	}
+	if *previewBannerFlag {
+		writeStartupArt(os.Stdout)
+		return
+	}
 
 	hasOverride := *configFlag != "" || *dataDirFlag != "" || strings.TrimSpace(os.Getenv("TKPM_CONFIG")) != "" || strings.TrimSpace(os.Getenv("TKPM_DATA_DIR")) != "" || strings.TrimSpace(os.Getenv("SBPM_CONFIG")) != "" || strings.TrimSpace(os.Getenv("SBPM_DATA_DIR")) != "" || strings.TrimSpace(os.Getenv("TCPM_CONFIG")) != "" || strings.TrimSpace(os.Getenv("TCPM_DATA_DIR")) != ""
 	paths, err := resolveAppPaths(*configFlag, *dataDirFlag)
@@ -1047,6 +1059,7 @@ func main() {
 	)
 	minr.SetTwitchEnabled(cfg.Twitch.Enabled)
 	minr.SetKickSettings(cfg.Kick)
+	minr.SetSessionSummaryInterval(time.Duration(cfg.SessionSummaryInterval) * time.Second)
 
 	if !cfg.Twitch.Enabled {
 		minr.MineKickOnly()

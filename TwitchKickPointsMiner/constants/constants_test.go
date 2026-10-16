@@ -9,7 +9,7 @@ func TestColorConstantsNonEmpty(t *testing.T) {
 }
 
 func TestProductIdentity(t *testing.T) {
-	if ProductName != "Twitch Kick Points Miner" || ProductTagline == "" || BuildLabel == "" || Version == "" || RepositoryURL == "" || ReleasesAPIURL == "" {
+	if ProductName != "Twitch Kick Points Miner" || ProductTagline == "" || Version == "" || RepositoryURL == "" || ReleasesAPIURL == "" {
 		t.Fatalf("product identity should be populated")
 	}
 }

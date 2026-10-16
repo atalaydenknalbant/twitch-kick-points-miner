@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atalaydenknalbant/twitch-kick-points-miner/TwitchKickPointsMiner/constants"
 )
 
 type kickRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -291,6 +293,15 @@ func TestKickRefreshReportsEveryFollowedChannel(t *testing.T) {
 
 	logs := output.String()
 	for _, expected := range []string{
+		"is " + constants.ColorGreen + "Online" + constants.ColorReset + "!",
+		"is " + constants.ColorRed + "Offline" + constants.ColorReset + "!",
+	} {
+		if !strings.Contains(logs, expected) {
+			t.Fatalf("Kick startup output missing colored status %q:\n%s", expected, logs)
+		}
+	}
+	logs = ansiRegexp.ReplaceAllString(logs, "")
+	for _, expected := range []string{
 		"Loading data for 3 streamer(s). Please wait...",
 		"Online (100 points) is Online!",
 		"Offline (20 points) is Offline!",
@@ -357,6 +368,34 @@ func TestKickSettingsDefaultNormalizesAccounts(t *testing.T) {
 	}
 	if got := settings.Accounts[0].Streamers; len(got) != 2 || got[0] != "streamer" || got[1] != "other" {
 		t.Fatalf("streamers not normalized: %#v", got)
+	}
+}
+
+func TestKickWatcherCapacityEnforcesSharedLimit(t *testing.T) {
+	capacity := newKickWatcherCapacity(1)
+	if !capacity.tryAcquire() {
+		t.Fatal("first watcher should acquire shared capacity")
+	}
+	if capacity.tryAcquire() {
+		t.Fatal("second watcher exceeded shared capacity")
+	}
+	capacity.release()
+	if !capacity.tryAcquire() {
+		t.Fatal("released capacity should be reusable")
+	}
+}
+
+func TestKickAccountRuntimesUseSharedCapacity(t *testing.T) {
+	capacity := newKickWatcherCapacity(1)
+	logger := NewLogger(LoggerSettings{}, "")
+	first := newKickAccountRuntime(KickAccountConfig{Token: "first"}, KickSettings{}, logger, capacity)
+	second := newKickAccountRuntime(KickAccountConfig{Token: "second"}, KickSettings{}, logger, capacity)
+
+	if first.watchers != capacity || second.watchers != capacity {
+		t.Fatal("Kick account runtimes do not share watcher capacity")
+	}
+	if first.maxActiveWatchers() != 1 || second.maxActiveWatchers() != 1 {
+		t.Fatalf("shared account limits got %d and %d", first.maxActiveWatchers(), second.maxActiveWatchers())
 	}
 }
 

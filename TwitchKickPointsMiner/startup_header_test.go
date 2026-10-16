@@ -31,4 +31,7 @@ func TestStartupHeaderUsesCurrentVersion(t *testing.T) {
 	if strings.Contains(logs, "v2.0.0") {
 		t.Fatalf("startup header contains stale version:\n%s", logs)
 	}
+	if strings.Contains(logs, "Official build") {
+		t.Fatalf("startup header contains the removed build label:\n%s", logs)
+	}
 }

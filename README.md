@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="https://github.com/atalaydenknalbant/twitch-kick-points-miner/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/atalaydenknalbant/twitch-kick-points-miner?style=flat-square"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey?style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?style=flat-square&logo=go&logoColor=white">
 </p>
 
@@ -29,9 +29,12 @@
 - Follow lists refresh while the miner is running, so new follows can be discovered without restarting.
 - Offline channels are polled without opening viewer connections and begin watching when they become live.
 - Twitch bonuses, watch streaks, Moments, Drops, raids, and predictions are supported.
+- Twitch watch cycles read HLS playlists and request every listed media segment with HEAD requests, without downloading audio or video. Cached playlist URLs are refreshed after failures or a broadcast change.
+- Temporary Drops playback failures do not stop channel points telemetry. Playback requests retry on the next watch cycle, with status messages when a failure begins or requests recover.
 - Kick viewer WebSocket activity, points balance tracking, watch rewards, and daily reward claiming are supported.
 - Kick watch recovery reserves interrupted live sessions for up to `15` minutes and releases them after a confirmed point gain.
 - Terminal output uses Twitch and Kick platform marks, balance deltas, games, and session totals.
+- A session summary every 30 minutes reports Twitch and Kick net points, online channels, active watches, and uptime. It runs without extra requests or background workers and respects privacy anonymization.
 - Optional Discord events, saved logs, privacy anonymization, and per streamer overrides are included.
 - Release checks use SHA256 verification before an automatic update is installed.
 
@@ -61,6 +64,10 @@ The miner stores Twitch cookies under `cookies`, logs under `log`, and configura
 
 The preferred environment variables are `TKPM_CONFIG`, `TKPM_DATA_DIR`, and `TKPM_PLATFORM_LOGOS`. The older `SBPM_*` and `TCPM_*` configuration aliases remain available for existing shortcuts.
 
+Run with `-version` to check the installed version without logging in.
+
+The startup banner uses the embedded miner artwork. Windows Terminal 1.22 or later and terminals advertising sixel support display the image; other terminals use colored text blocks from the same image. It scales to the available terminal space. Run with `-preview-banner` to see it without logging in. Set `TKPM_BANNER_MODE` to `sixel`, `blocks`, `ascii`, or `off` to override detection. `NO_COLOR` uses plain ASCII, and redirected output shows only the project name unless a mode is explicitly selected.
+
 ## Configuration
 
 The program creates missing settings automatically. Important top level options are:
@@ -74,6 +81,7 @@ The program creates missing settings automatically. Important top level options 
 | `claim_drops_startup` | `true` | Check Twitch Drops inventory during startup. |
 | `claim_drops` | `true` | Continue checking and claiming supported Twitch Drops. |
 | `show_drops_progress` | `false` | Print compact progress during inventory checks. |
+| `session_summary_interval` | `1800` | Seconds between session summaries. Set to `0` to disable them. |
 | `claim_moments` | `true` | Claim supported Twitch Moments. |
 | `follow_raid` | `true` | Follow supported Twitch raid transitions. |
 | `betting(make_predictions)` | `true` | Enable configured Twitch prediction betting. |
@@ -109,6 +117,8 @@ The program creates missing settings automatically. Important top level options 
 ```
 
 Leave a Kick account `streamers` array empty to load every channel followed by that account. A nonempty array keeps manual priority order. Followed channels are refreshed every `check_interval`. Only live channels receive viewer connections.
+
+The miner keeps the original limit of 2 active stream watchers in total. Twitch only and Kick only runs can use both slots. When Twitch and Kick run together, each platform receives 1 slot. `max_concurrent` remains a per account ceiling, while all Kick accounts share the Kick platform slot total.
 
 Kick daily rewards are checked once at startup and every `check_interval`. When Kick reports that the account level daily challenge is `claimable`, the miner claims it once and logs the result. Set `claim_daily_rewards` to `false` to disable this behavior. Existing configurations default to enabled when this key is absent.
 

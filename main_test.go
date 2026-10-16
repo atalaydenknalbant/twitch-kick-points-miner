@@ -26,6 +26,7 @@ func TestDefaultConfigIncludesExpectedKeys(t *testing.T) {
 		"chat_presence",
 		"disable_at_in_nickname",
 		"show_drops_progress",
+		"session_summary_interval",
 		"bet",
 		"kick",
 		"watch_priority",
@@ -44,6 +45,31 @@ func TestDefaultConfigIncludesExpectedKeys(t *testing.T) {
 	twitch, ok := cfg["twitch"].(map[string]interface{})
 	if !ok || twitch["enabled"] != true {
 		t.Fatalf("twitch.enabled default got %#v, want true", cfg["twitch"])
+	}
+}
+
+func TestSessionSummaryConfigDefaultsAndDisable(t *testing.T) {
+	for _, test := range []struct {
+		name, input string
+		want        int
+	}{
+		{name: "default", input: "{}", want: 1800},
+		{name: "disabled", input: "{\"session_summary_interval\":0}", want: 0},
+		{name: "custom", input: "{\"session_summary_interval\":600}", want: 600},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(test.input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadOrCreateConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.SessionSummaryInterval != test.want {
+				t.Fatalf("summary interval got %d, want %d", cfg.SessionSummaryInterval, test.want)
+			}
+		})
 	}
 }
 
