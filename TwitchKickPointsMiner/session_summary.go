@@ -79,7 +79,8 @@ func (m *Miner) logSessionSummary(now time.Time) {
 	}
 	if m.kickMiner != nil {
 		netPoints, online, total, watching := 0, 0, 0, 0
-		for _, account := range m.kickMiner.Snapshot() {
+		snapshots := m.kickMiner.Snapshot()
+		for _, account := range snapshots {
 			for _, streamer := range account.Streamers {
 				total++
 				if streamer.StatusKnown && streamer.Online {
@@ -94,6 +95,7 @@ func (m *Miner) logSessionSummary(now time.Time) {
 			}
 		}
 		m.logPlatformSessionSummary(constants.PlatformKickToken, netPoints, online, total, watching)
+		m.kickMiner.logRewardSummary(now, snapshots)
 	}
 }
 

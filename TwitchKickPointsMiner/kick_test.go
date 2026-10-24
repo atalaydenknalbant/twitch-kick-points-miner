@@ -119,8 +119,8 @@ func TestParseKickFollowedChannelsPageRejectsMissingChannels(t *testing.T) {
 	}
 }
 
-func TestParseKickDailyRewards(t *testing.T) {
-	rewards, err := parseKickDailyRewards(map[string]interface{}{
+func TestParseKickRewards(t *testing.T) {
+	rewards, err := parseKickRewards(map[string]interface{}{
 		"data": []interface{}{
 			map[string]interface{}{
 				"id":     "challenge-1",
@@ -157,7 +157,7 @@ func TestKickRuntimeClaimsDailyRewardOncePerWindow(t *testing.T) {
 			if got := req.Header.Get("X-App-Platform"); got != "web" {
 				t.Fatalf("platform header got %q", got)
 			}
-			return kickTestResponse(req, http.StatusOK, `{"data":[{"id":"daily-1","status":"claimable","window":{"ends_at":"2026-09-09T00:00:00Z"}}]}`), nil
+			return kickTestResponse(req, http.StatusOK, `{"data":[{"id":"daily-1","name":"Daily Reward","status":"claimable","window":{"ends_at":"2099-09-09T00:00:00Z"}}]}`), nil
 		}
 		if req.URL.Path == "/api/v1/gamification/challenges/daily-1/claim" {
 			postCalls++
@@ -174,13 +174,13 @@ func TestKickRuntimeClaimsDailyRewardOncePerWindow(t *testing.T) {
 		return nil, nil
 	})
 
-	runtime.checkDailyRewards(context.Background())
-	runtime.checkDailyRewards(context.Background())
+	runtime.checkRewards(context.Background())
+	runtime.checkRewards(context.Background())
 
 	if getCalls != 2 || postCalls != 1 {
 		t.Fatalf("daily reward calls got GET=%d POST=%d", getCalls, postCalls)
 	}
-	if !strings.Contains(output.String(), "Daily reward claimed!") {
+	if !strings.Contains(output.String(), "Daily Reward | Claimed!") {
 		t.Fatalf("claim log missing:\n%s", output.String())
 	}
 }
@@ -197,7 +197,7 @@ func TestKickRuntimeCanDisableDailyRewards(t *testing.T) {
 		return nil, nil
 	})
 
-	runtime.checkDailyRewards(context.Background())
+	runtime.checkRewards(context.Background())
 }
 
 func kickTestResponse(req *http.Request, status int, body string) *http.Response {

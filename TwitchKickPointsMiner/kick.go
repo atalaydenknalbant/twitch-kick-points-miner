@@ -238,6 +238,7 @@ func (m *KickMiner) LogSummary() {
 	if len(snapshots) == 0 {
 		return
 	}
+	m.logRewardSummary(time.Now(), snapshots)
 
 	hide := m.logger.settings.AnonymizeLogs
 	totalPointsChange := 0
@@ -302,6 +303,11 @@ type kickAccountRuntime struct {
 	loaded            bool
 	rebalanceRequests chan struct{}
 	claimedRewards    map[string]struct{}
+	rewards           map[string]kickRewardState
+	rewardOrder       []string
+	rewardsCheckedAt  time.Time
+	rewardCheckFailed bool
+	rewardsClaimed    int
 	watchers          *kickWatcherCapacity
 	nextGeneration    uint64
 }
@@ -336,6 +342,7 @@ type kickPointsHistoryEntry struct {
 type kickAccountSnapshot struct {
 	Alias     string
 	Streamers []kickStreamerSnapshot
+	Rewards   kickRewardsSnapshot
 }
 
 type kickStreamerSnapshot struct {
@@ -396,7 +403,7 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 	}
 	loadStartedAt := time.Now()
 	r.refresh(ctx)
-	r.checkDailyRewards(ctx)
+	r.checkRewards(ctx)
 	r.logLoaded(time.Since(loadStartedAt))
 	r.setLoaded()
 	r.rebalance(ctx)
@@ -410,7 +417,7 @@ func (r *kickAccountRuntime) run(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			r.refresh(ctx)
-			r.checkDailyRewards(ctx)
+			r.checkRewards(ctx)
 			r.rebalance(ctx)
 		case <-r.rebalanceRequests:
 			r.rebalance(ctx)
@@ -424,37 +431,6 @@ func (r *kickAccountRuntime) maxActiveWatchers() int {
 		return r.account.MaxConcurrent
 	}
 	return limit
-}
-
-func (r *kickAccountRuntime) checkDailyRewards(ctx context.Context) {
-	if !r.settings.claimDailyRewardsEnabled() {
-		return
-	}
-	rewards, err := r.client.dailyRewards(ctx)
-	if err != nil {
-		r.logger.Debugf("%s daily reward check failed: %v", constants.PlatformKickToken, err)
-		return
-	}
-	for _, reward := range rewards {
-		if !strings.EqualFold(reward.Status, "claimable") || reward.ID == "" {
-			continue
-		}
-		key := reward.ID + "|" + reward.WindowEndsAt
-		r.mu.Lock()
-		_, claimed := r.claimedRewards[key]
-		r.mu.Unlock()
-		if claimed {
-			continue
-		}
-		if err := r.client.claimDailyReward(ctx, reward.ID); err != nil {
-			r.logger.Errorf("%s daily reward claim failed: %v", constants.PlatformKickToken, err)
-			continue
-		}
-		r.mu.Lock()
-		r.claimedRewards[key] = struct{}{}
-		r.mu.Unlock()
-		r.logger.EmojiPrintf(":gift:", "%s Daily reward claimed!", constants.PlatformKickToken)
-	}
 }
 
 func (r *kickAccountRuntime) refresh(ctx context.Context) {
@@ -838,7 +814,7 @@ func (r *kickAccountRuntime) watchStreamer(ctx context.Context, name string, cha
 			return
 		}
 		if err != nil {
-			r.logger.Printf("%s %s websocket ended: %v", constants.PlatformKickToken, name, err)
+			r.logger.Debugf("%s %s websocket ended: %v", constants.PlatformKickToken, name, err)
 		}
 		if !sleepContext(ctx, time.Duration(r.settings.ReconnectCooldownSeconds)*time.Second) {
 			return
@@ -1013,6 +989,7 @@ func (r *kickAccountRuntime) snapshotLocked() kickAccountSnapshot {
 	return kickAccountSnapshot{
 		Alias:     r.account.displayName(),
 		Streamers: streamers,
+		Rewards:   r.rewardSnapshotLocked(),
 	}
 }
 
@@ -1160,12 +1137,6 @@ type kickChannelInfo struct {
 	UserID    int64
 	StreamID  int64
 	Online    bool
-}
-
-type kickDailyReward struct {
-	ID           string
-	Status       string
-	WindowEndsAt string
 }
 
 func newKickClient(token string) *kickClient {
@@ -1379,7 +1350,7 @@ func (c *kickClient) pointsFromChannel(ctx context.Context, username string) (in
 	return 0, false, nil
 }
 
-func (c *kickClient) dailyRewards(ctx context.Context) ([]kickDailyReward, error) {
+func (c *kickClient) rewardChallenges(ctx context.Context) ([]kickRewardChallenge, error) {
 	headers := map[string]string{"X-App-Platform": "web"}
 	body, status, err := c.getJSON(ctx, kickChallengesAPI, kickBaseURL+"/", headers)
 	if err != nil {
@@ -1393,15 +1364,15 @@ func (c *kickClient) dailyRewards(ctx context.Context) ([]kickDailyReward, error
 		}
 	}
 	if status != http.StatusOK {
-		return nil, kickStatusError("daily rewards", status, body)
+		return nil, kickStatusError("rewards", status, body)
 	}
-	return parseKickDailyRewards(body)
+	return parseKickRewards(body)
 }
 
-func (c *kickClient) claimDailyReward(ctx context.Context, challengeID string) error {
+func (c *kickClient) claimReward(ctx context.Context, challengeID string) (kickRewardWinner, error) {
 	challengeID = strings.TrimSpace(challengeID)
 	if challengeID == "" {
-		return errors.New("daily reward challenge id missing")
+		return kickRewardWinner{}, errors.New("reward challenge id missing")
 	}
 	headers := map[string]string{
 		"Content-Type":   "application/json",
@@ -1410,19 +1381,19 @@ func (c *kickClient) claimDailyReward(ctx context.Context, challengeID string) e
 	rawURL := fmt.Sprintf(kickClaimAPI, url.PathEscape(challengeID))
 	body, status, err := c.postJSON(ctx, rawURL, kickBaseURL+"/", headers, []byte("{}"))
 	if err != nil {
-		return err
+		return kickRewardWinner{}, err
 	}
 	if status == http.StatusForbidden {
 		c.resetSession()
 		body, status, err = c.postJSON(ctx, rawURL, kickBaseURL+"/", headers, []byte("{}"))
 		if err != nil {
-			return err
+			return kickRewardWinner{}, err
 		}
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return kickStatusError("daily reward claim", status, body)
+		return kickRewardWinner{}, kickStatusError("reward claim", status, body)
 	}
-	return nil
+	return parseKickRewardClaim(body)
 }
 
 func (c *kickClient) getJSON(ctx context.Context, rawURL, referer string, extraHeaders map[string]string) (map[string]interface{}, int, error) {
@@ -1567,29 +1538,6 @@ func parseKickPoints(payload map[string]interface{}) (int, bool) {
 		return points, true
 	}
 	return 0, false
-}
-
-func parseKickDailyRewards(payload map[string]interface{}) ([]kickDailyReward, error) {
-	rawRewards, ok := payload["data"].([]interface{})
-	if !ok {
-		return nil, errors.New("daily rewards response missing data")
-	}
-	rewards := make([]kickDailyReward, 0, len(rawRewards))
-	for _, rawReward := range rawRewards {
-		rewardData, ok := rawReward.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		reward := kickDailyReward{
-			ID:     kickValueString(rewardData["id"]),
-			Status: kickValueString(rewardData["status"]),
-		}
-		if window, ok := rewardData["window"].(map[string]interface{}); ok {
-			reward.WindowEndsAt = kickValueString(window["ends_at"])
-		}
-		rewards = append(rewards, reward)
-	}
-	return rewards, nil
 }
 
 func kickValueString(value interface{}) string {

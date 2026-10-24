@@ -31,7 +31,8 @@
 - Twitch bonuses, watch streaks, Moments, Drops, raids, and predictions are supported.
 - Twitch watch cycles read HLS playlists and request every listed media segment with HEAD requests, without downloading audio or video. Cached playlist URLs are refreshed after failures or a broadcast change.
 - Temporary Drops playback failures do not stop channel points telemetry. Playback requests retry on the next watch cycle, with status messages when a failure begins or requests recover.
-- Kick viewer WebSocket activity, points balance tracking, watch rewards, and daily reward claiming are supported.
+- Kick viewer WebSocket activity, points balance tracking, watch rewards, and automatic daily and event reward claiming are supported.
+- Kick reward tracking shows credited watch minutes, remaining requirements, claim deadlines, event end dates, and claimed rewards in session summaries.
 - Kick watch recovery reserves interrupted live sessions for up to `15` minutes and releases them after a confirmed point gain.
 - Terminal output uses Twitch and Kick platform marks, balance deltas, games, and session totals.
 - A session summary every 30 minutes reports Twitch and Kick net points, online channels, active watches, and uptime. It runs without extra requests or background workers and respects privacy anonymization.
@@ -120,7 +121,11 @@ Leave a Kick account `streamers` array empty to load every channel followed by t
 
 The miner keeps the original limit of 2 active stream watchers in total. Twitch only and Kick only runs can use both slots. When Twitch and Kick run together, each platform receives 1 slot. `max_concurrent` remains a per account ceiling, while all Kick accounts share the Kick platform slot total.
 
-Kick daily rewards are checked once at startup and every `check_interval`. When Kick reports that the account level daily challenge is `claimable`, the miner claims it once and logs the result. Set `claim_daily_rewards` to `false` to disable this behavior. Existing configurations default to enabled when this key is absent.
+Kick rewards are checked at startup and every `check_interval`. All challenges returned by Kick are tracked separately, including daily rewards and limited events such as Trick or Treat. The miner claims each eligible challenge once per claim window when Kick reports `claimable`. Expired and upcoming challenges are not claimed. Set `claim_daily_rewards` to `false` to disable reward checking and claiming. Existing configurations default to enabled when this key is absent.
+
+Reward progress uses watch minutes credited by Kick across the day. It is not estimated from application uptime or added together across channels. Each challenge shows its own requirement, percentage, remaining minutes, claim deadline, and event end date when available. Progress changes are logged at most every 5 minutes; status changes and successful claims appear immediately when detected. Rewards already claimed in the browser are recognized when the app starts. The 30 minute session summary also includes current reward progress and counts for rewards claimed during this run, claimed in the current windows, ready, and in progress. Reward names and rarity are shown when Kick provides them.
+
+Temporary reward check or claim failures are retried automatically. Detailed errors and routine WebSocket disconnect messages are shown only with debug logging enabled. Progress shown after a failed refresh is marked with its last check time.
 
 Kick setup never opens or controls a browser. Open `https://kick.com/following` in your normal signed in browser, press `F12`, select `Network`, reload the page, and filter for `followed`. Open the `/api/v2/channels/followed` request, expand `Request Headers`, and copy the complete `Authorization: Bearer ...` value into the terminal. You can also paste only the value after `Bearer`.
 
